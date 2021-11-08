@@ -3,9 +3,6 @@ import glob
 
 from mautrix_telegram.get_version import git_tag, git_revision, version, linkified_version
 
-with open("requirements.txt") as reqs:
-    install_requires = reqs.read().splitlines()
-
 with open("optional-requirements.txt") as reqs:
     extras_require = {}
     current = []
@@ -47,7 +44,6 @@ setuptools.setup(
 
     packages=setuptools.find_packages(),
 
-    install_requires=install_requires,
     extras_require=extras_require,
     python_requires="~=3.7",
 

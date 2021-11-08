@@ -43,6 +43,7 @@ RUN apk add --no-cache \
       py3-future \
       bash \
       curl \
+      git \
       jq \
       yq
 
