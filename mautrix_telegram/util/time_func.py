@@ -16,7 +16,6 @@ def time_func(log_level: str, name: Optional[str] = None):
             func_name = name or func.__name__
             t1 = time()
             res = func(*args,  **kwargs)
-            print(func_name, res)
             if isawaitable(res):
                 # Ensure we only log once the function completes
                 async def await_result():
