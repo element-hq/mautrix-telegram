@@ -38,6 +38,7 @@ from .portal import Portal, init as init_portal
 from .puppet import Puppet, init as init_puppet
 from .user import User, init as init_user
 from .version import version, linkified_version
+from .util.time_func import time_func
 
 try:
     import prometheus_client as prometheus
@@ -88,6 +89,7 @@ class TelegramBridge(Bridge):
                                    provisioning_api.app)
             context.provisioning_api = provisioning_api
 
+    @time_func(log_level="INFO")
     def prepare_bridge(self) -> None:
         self.bot = init_bot(self.config)
         context = Context(self.az, self.config, self.loop, self.session_container, self, self.bot)
@@ -145,6 +147,7 @@ class TelegramBridge(Bridge):
     async def count_logged_in_users(self) -> int:
         return len([user for user in User.by_tgid.values() if user.tgid])
 
+    @time_func(log_level="DEBUG")
     async def _update_active_puppet_metric(self) -> None:
         active_users = UserActivity.get_active_count(
             self.config['bridge.limits.min_puppet_activity_days'],

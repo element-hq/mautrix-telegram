@@ -28,6 +28,8 @@ from telethon.errors import ChannelInvalidError, ChannelPrivateError
 
 from mautrix.types import UserID
 
+from mautrix_telegram.util.time_func import time_func
+
 from .abstract_user import AbstractUser
 from .db import BotChat
 from .types import TelegramID
@@ -87,6 +89,7 @@ class Bot(AbstractUser):
             if isinstance(user_id, int):
                 self.tg_whitelist.append(user_id)
 
+    @time_func(log_level="INFO")
     async def start(self, delete_unless_authenticated: bool = False) -> 'Bot':
         self.chats = {chat.id: chat.type for chat in BotChat.all()}
         await super().start(delete_unless_authenticated)
@@ -95,6 +98,7 @@ class Bot(AbstractUser):
         await self.post_login()
         return self
 
+    @time_func(log_level="INFO")
     async def post_login(self) -> None:
         await self.init_permissions()
         info = await self.client.get_me()

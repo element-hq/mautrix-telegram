@@ -33,6 +33,7 @@ from mautrix.util.logging import TraceLogger
 from .types import TelegramID
 from .db import Puppet as DBPuppet
 from . import util, portal as p
+from .util.time_func import time_func
 
 if TYPE_CHECKING:
     from .matrix import MatrixHandler
@@ -464,8 +465,8 @@ class Puppet(BasePuppet):
         return None
     # endregion
 
-
-def init(context: 'Context') -> Iterable[Awaitable[Any]]:
+@time_func(log_level="INFO", name="puppet.init")
+def init(context: 'Context') -> "Future[None]":
     global config
     Puppet.az, config, Puppet.loop, _ = context.core
     Puppet.mx = context.mx
@@ -484,4 +485,4 @@ def init(context: 'Context') -> Iterable[Awaitable[Any]]:
                                       in config["bridge.login_shared_secret_map"].items()}
     Puppet.login_device_name = "Telegram Bridge"
 
-    return (puppet.try_start() for puppet in Puppet.all_with_custom_mxid())
+    return asyncio.gather(*(puppet.try_start() for puppet in Puppet.all_with_custom_mxid()))

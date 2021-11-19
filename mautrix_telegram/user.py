@@ -13,7 +13,8 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from typing import (Awaitable, Dict, List, Iterable, NamedTuple, Optional, Tuple, Any, cast,
+from asyncio import Future
+from typing import (AsyncIterable, Awaitable, Dict, Iterator, List, Iterable, NamedTuple, Optional, Tuple, Any, cast,
                     TYPE_CHECKING)
 from datetime import datetime, timezone
 import logging
@@ -39,6 +40,7 @@ from mautrix.util.bridge_state import BridgeStateEvent
 from mautrix.util.logging import TraceLogger
 from mautrix.util.opt_prometheus import Gauge
 
+from .util.time_func import time_func
 from .types import TelegramID
 from .db import User as DBUser, Portal as DBPortal, Message as DBMessage
 from .abstract_user import AbstractUser
@@ -675,10 +677,11 @@ class User(AbstractUser, BaseUser):
     # endregion
 
 
-def init(context: 'Context') -> Iterable[Awaitable['User']]:
+@time_func(log_level="INFO", name="user.init")
+def init(context: 'Context') -> "Future[None]":
     global config
     config = context.config
     User.bridge = context.bridge
 
-    return (User.from_db(db_user).try_ensure_started()
-            for db_user in DBUser.all_with_tgid())
+    return asyncio.gather(*(User.from_db(db_user).try_ensure_started()
+            for db_user in DBUser.all_with_tgid()))
