@@ -16,7 +16,7 @@
 from typing import Optional, Tuple, Awaitable
 import asyncio
 
-from telethon.tl.types import ChatForbidden, ChannelForbidden
+from telethon.tl.types import Chat, ChatForbidden, Channel, ChannelForbidden
 
 from mautrix.types import EventID, RoomID
 
@@ -96,6 +96,18 @@ async def bridge(evt: CommandEvent) -> EventID:
     if await po.Portal.reached_portal_limit():
         return await evt.reply("This bridge has reached the maximum number of rooms that "
                                "can be bridged.")
+
+
+    max_remote_users = evt.config["bridge.max_portal_remote_users"]
+    if max_remote_users:
+        is_logged_in = await evt.sender.is_logged_in() and not evt.sender.command_status
+        user = evt.sender if is_logged_in else evt.tgbot
+        remote_users = await portal.get_remote_user_count(user)
+        evt.log.debug(f"{evt.sender} requested a bridge to portal with {remote_users} "
+                      f"remote users (limit is {max_remote_users})")
+        if remote_users > max_remote_users:
+            return await evt.reply(f"Cannot bridge a room with {remote_users} remote users\n"
+                                   f"(the bridge is limited to {max_remote_users})")
 
     evt.sender.command_status = {
         "next": confirm_bridge,

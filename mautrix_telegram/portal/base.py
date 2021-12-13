@@ -290,6 +290,12 @@ class BasePortal(MautrixBasePortal, ABC):
                                                          expire_date=expire, usage_limit=uses))
         return link.link
 
+    async def get_remote_user_count(self, user: 'u.User') -> int:
+        entity = await self.get_entity(user)
+        if not isinstance(entity, (Chat, Channel)):
+            raise ValueError("Can't get remote user count for Portal that isn't Chat nor Channel")
+        return entity.participants_count
+
     # endregion
     # region Matrix room cleanup
 

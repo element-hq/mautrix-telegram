@@ -223,6 +223,8 @@ bridge:
     # The maximum number of rooms that can be bridged on this instance.
     # When the maximum number of rooms has been reached, attempts to create new links will error. Set to -1 to disable.
     max_portal_rooms: -1
+    # The maximum number of Telegram users allowed in a single room
+    max_portal_remote_users: -1
     # Settings for converting animated stickers.
     animated_sticker:
         # Format to which animated stickers should be converted.
