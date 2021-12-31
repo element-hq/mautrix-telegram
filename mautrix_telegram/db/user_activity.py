@@ -14,19 +14,18 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from typing import Optional, Iterable
+from typing import Iterable, Optional
+import logging
+import datetime
+import time
 
-from sqlalchemy import Column, Integer, BigInteger, func, select
+from sqlalchemy import BigInteger, Column, Integer, func, select
 from sqlalchemy.ext.hybrid import hybrid_property
 
 from mautrix.util.db import Base
 from mautrix.util.logging import TraceLogger
 
 from ..types import TelegramID
-
-import logging
-import datetime
-import time
 
 UPPER_ACTIVITY_LIMIT_MS = 60 * 1000 * 5 # 5 minutes
 ONE_DAY_MS = 24 * 60 * 60 * 1000

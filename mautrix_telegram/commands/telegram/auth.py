@@ -48,7 +48,7 @@ from mautrix.types import (
 from mautrix.util.format_duration import format_duration as fmt_duration
 
 from ... import user as u
-from ...commands import command_handler, CommandEvent, SECTION_AUTH
+from ...commands import SECTION_AUTH, CommandEvent, command_handler
 from ...types import TelegramID
 from ...util import format_duration as fmt_duration
 

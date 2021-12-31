@@ -190,13 +190,15 @@ from mautrix.util.message_send_checkpoint import MessageSendCheckpointStatus
 from mautrix.util.simple_lock import SimpleLock
 from mautrix.util.simple_template import SimpleTemplate
 
-from .types import TelegramID
-from .db import Portal as DBPortal, Message as DBMessage, TelegramFile as DBTelegramFile, UserActivity
 from .util import sane_mimetypes, parallel_transfer_to_telegram
-from .tgclient import MautrixTelegramClient
 from . import abstract_user as au, formatter, puppet as p, user as u, util
 from .config import Config
-from .db import Message as DBMessage, Portal as DBPortal, TelegramFile as DBTelegramFile
+from .db import (
+    Message as DBMessage,
+    Portal as DBPortal,
+    TelegramFile as DBTelegramFile,
+    UserActivity
+)
 from .tgclient import MautrixTelegramClient
 from .types import TelegramID
 from .util import parallel_transfer_to_telegram, sane_mimetypes

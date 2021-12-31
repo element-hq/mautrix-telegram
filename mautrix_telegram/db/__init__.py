@@ -22,7 +22,7 @@ from .puppet import Puppet
 from .telegram_file import TelegramFile
 from .telethon_session import PgSession
 from .upgrade import upgrade_table
-from .user import User, UserPortal, Contact
+from .user import Contact, User, UserPortal
 from .user_activity import UserActivity
 
 

@@ -13,13 +13,14 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from typing import Any
-import asyncio
-from time import time
 from __future__ import annotations
 
-import telethon
+from typing import Any
+from time import time
+import asyncio
+
 from telethon import __version__ as __telethon_version__
+import telethon
 
 from mautrix.bridge import Bridge
 from mautrix.types import RoomID, UserID

@@ -41,9 +41,9 @@ from mautrix.bridge import InvalidAccessToken, OnlyLoginSelf
 from mautrix.util.format_duration import format_duration
 
 from ...commands.telegram.auth import enter_password
-from ...util import format_duration
 from ...puppet import Puppet
 from ...user import User
+from ...util import format_duration
 
 
 class AuthAPI(abc.ABC):
