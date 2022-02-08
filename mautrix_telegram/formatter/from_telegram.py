@@ -94,9 +94,7 @@ async def _add_forward_header(
             )
 
         if not fwd_from_text:
-            puppet = await pu.Puppet.get_by_tgid(
-                TelegramID(fwd_from.from_id.user_id), create=False
-            )
+            puppet = await pu.Puppet.get_by_peer(fwd_from.from_id, create=False)
             if puppet and puppet.displayname:
                 fwd_from_text = puppet.displayname or puppet.mxid
                 fwd_from_html = (
@@ -200,7 +198,7 @@ async def telegram_to_matrix(
     def force_html():
         if not content.formatted_body:
             content.format = Format.HTML
-            content.formatted_body = escape(content.body)
+            content.formatted_body = escape(content.body).replace("\n", "<br/>")
 
     if require_html:
         force_html()
@@ -290,10 +288,13 @@ async def _telegram_entities_to_matrix(
             skip_entity = await _parse_url(
                 html, entity_text, entity.url if entity_type == MessageEntityTextUrl else None
             )
-        elif entity_type == MessageEntityBotCommand:
-            html.append(f"<font color='blue'>{entity_text}</font>")
-        elif entity_type in (MessageEntityHashtag, MessageEntityCashtag, MessageEntityPhone):
-            html.append(f"<font color='blue'>{entity_text}</font>")
+        elif entity_type in (
+            MessageEntityBotCommand,
+            MessageEntityHashtag,
+            MessageEntityCashtag,
+            MessageEntityPhone,
+        ):
+            html.append(f"<font color='#3771bb'>{entity_text}</font>")
         elif entity_type == MessageEntitySpoiler:
             html.append(f"<span data-mx-spoiler>{entity_text}</span>")
         else:

@@ -1,5 +1,5 @@
 # mautrix-telegram - A Matrix-Telegram puppeting bridge
-# Copyright (C) 2021 Tulir Asokan
+# Copyright (C) 2022 Tulir Asokan
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -106,6 +106,7 @@ from telethon.tl.types import (
     MessageActionChatEditTitle,
     MessageActionChatJoinedByLink,
     MessageActionChatMigrateTo,
+    MessageActionContactSignUp,
     MessageActionGameScore,
     MessageEntityPre,
     MessageMediaContact,
@@ -113,11 +114,13 @@ from telethon.tl.types import (
     MessageMediaDocument,
     MessageMediaGame,
     MessageMediaGeo,
+    MessageMediaGeoLive,
     MessageMediaPhoto,
     MessageMediaPoll,
     MessageMediaUnsupported,
+    MessageMediaVenue,
+    MessagePeerReaction,
     MessageReactions,
-    MessageUserReaction,
     PeerChannel,
     PeerChat,
     PeerUser,
@@ -144,6 +147,7 @@ from telethon.tl.types import (
     TypePhotoSize,
     TypeUser,
     TypeUserFull,
+    TypeUserProfilePhoto,
     UpdateChannelUserTyping,
     UpdateChatUserTyping,
     UpdateNewMessage,
@@ -193,6 +197,7 @@ from mautrix.util.simple_template import SimpleTemplate
 from . import abstract_user as au, formatter, portal_util as putil, puppet as p, user as u, util
 from .config import Config
 from .db import (
+    DisappearingMessage,
     Message as DBMessage,
     Portal as DBPortal,
     Reaction as DBReaction,
@@ -242,6 +247,7 @@ class DocAttrs(NamedTuple):
 class Portal(DBPortal, BasePortal):
     bot: "Bot"
     config: Config
+    disappearing_msg_class = DisappearingMessage
 
     # Instance cache
     by_mxid: dict[RoomID, Portal] = {}
@@ -301,6 +307,8 @@ class Portal(DBPortal, BasePortal):
         title: str | None = None,
         about: str | None = None,
         photo_id: str | None = None,
+        name_set: bool = False,
+        avatar_set: bool = False,
         local_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
@@ -318,8 +326,11 @@ class Portal(DBPortal, BasePortal):
             title=title,
             about=about,
             photo_id=photo_id,
+            name_set=name_set,
+            avatar_set=avatar_set,
             local_config=local_config or {},
         )
+        BasePortal.__init__(self)
         self.log = self.log.getChild(self.tgid_log if self.tgid else self.mxid)
         self._main_intent = None
         self.deleted = False
@@ -435,12 +446,11 @@ class Portal(DBPortal, BasePortal):
     # region Matrix -> Telegram metadata
 
     async def get_telegram_users_in_matrix_room(
-        self, source: u.User
+        self, source: u.User, pre_create: bool = False
     ) -> tuple[list[InputPeerUser], list[UserID]]:
         user_tgids = {}
-        user_mxids = await self.main_intent.get_room_members(
-            self.mxid, (Membership.JOIN, Membership.INVITE)
-        )
+        intent = self.az.intent if pre_create else self.main_intent
+        user_mxids = await intent.get_room_members(self.mxid, (Membership.JOIN, Membership.INVITE))
         for mxid in user_mxids:
             if mxid == self.az.bot_mxid:
                 continue
@@ -560,6 +570,8 @@ class Portal(DBPortal, BasePortal):
         await self.update_bridge_info()
 
     async def invite_telegram(self, source: u.User, puppet: p.Puppet | au.AbstractUser) -> None:
+        if puppet.is_channel:
+            raise ValueError("Can't invite channels to chats")
         if self.peer_type == "chat":
             await source.client(
                 AddChatUserRequest(chat_id=self.tgid, user_id=puppet.tgid, fwd_limit=0)
@@ -632,14 +644,7 @@ class Portal(DBPortal, BasePortal):
                 puppet = await p.Puppet.get_by_tgid(self.tgid)
             await puppet.update_info(user, entity)
             await puppet.intent_for(self).join_room(self.mxid)
-            if self.encrypted or self.private_chat_portal_meta:
-                # The bridge bot needs to join for e2ee, but that messes up the default name
-                # generation. If/when canonical DMs happen, this might not be necessary anymore.
-                changed = await self._update_title(puppet.displayname)
-                changed = await self._update_avatar(user, entity.photo) or changed
-                if changed:
-                    await self.save()
-                    await self.update_bridge_info()
+            await self.update_info_from_puppet(puppet, user, entity.photo)
 
             puppet = await p.Puppet.get_by_custom_mxid(user.mxid)
             if puppet:
@@ -652,6 +657,22 @@ class Portal(DBPortal, BasePortal):
 
         if self.sync_matrix_state:
             await self.main_intent.get_joined_members(self.mxid)
+
+    async def update_info_from_puppet(
+        self,
+        puppet: p.Puppet,
+        source: au.AbstractUser | None = None,
+        photo: UserProfilePhoto | None = None,
+    ) -> None:
+        if not self.encrypted and not self.private_chat_portal_meta:
+            return
+        # The bridge bot needs to join for e2ee, but that messes up the default name
+        # generation. If/when canonical DMs happen, this might not be necessary anymore.
+        changed = await self._update_avatar_from_puppet(puppet, source, photo)
+        changed = await self._update_title(puppet.displayname) or changed
+        if changed:
+            await self.save()
+            await self.update_bridge_info()
 
     async def create_matrix_room(
         self,
@@ -801,8 +822,8 @@ class Portal(DBPortal, BasePortal):
                 "state_key": self.bridge_info_state_key,
                 "content": self.bridge_info,
             },
+            # TODO remove this once https://github.com/matrix-org/matrix-doc/pull/2346 is in spec
             {
-                # TODO remove this once https://github.com/matrix-org/matrix-doc/pull/2346 is in spec
                 "type": str(StateHalfShotBridge),
                 "state_key": self.bridge_info_state_key,
                 "content": self.bridge_info,
@@ -813,7 +834,7 @@ class Portal(DBPortal, BasePortal):
             self.encrypted = True
             initial_state.append(
                 {
-                    "type": "m.room.encryption",
+                    "type": str(EventType.ROOM_ENCRYPTION),
                     "content": {"algorithm": "m.megolm.v1.aes-sha2"},
                 }
             )
@@ -821,16 +842,18 @@ class Portal(DBPortal, BasePortal):
                 create_invites.append(self.az.bot_mxid)
         if direct and (self.encrypted or self.private_chat_portal_meta):
             self.title = puppet.displayname
-        if self.config["appservice.community_id"]:
-            initial_state.append(
-                {
-                    "type": "m.room.related_groups",
-                    "content": {"groups": [self.config["appservice.community_id"]]},
-                }
-            )
+            self.avatar_url = puppet.avatar_url
+            self.photo_id = puppet.photo_id
         creation_content = {}
         if not self.config["bridge.federate_rooms"]:
             creation_content["m.federate"] = False
+        if self.avatar_url:
+            initial_state.append(
+                {
+                    "type": str(EventType.ROOM_AVATAR),
+                    "content": {"url": self.avatar_url},
+                }
+            )
 
         with self.backfill_lock:
             room_id = await self.main_intent.create_room(
@@ -845,6 +868,8 @@ class Portal(DBPortal, BasePortal):
             )
             if not room_id:
                 raise Exception(f"Failed to create room")
+            self.name_set = bool(self.title)
+            self.avatar_set = bool(self.avatar_url)
 
             if self.encrypted and self.matrix.e2ee and direct:
                 try:
@@ -947,11 +972,12 @@ class Portal(DBPortal, BasePortal):
             if user_mxid == self.az.bot_mxid:
                 continue
 
-            puppet_id = p.Puppet.get_id_from_mxid(user_mxid)
-            if puppet_id:
-                if puppet_id in allowed_tgids:
+            puppet = await p.Puppet.get_by_mxid(user_mxid)
+            if puppet:
+                # TODO figure out when/how to clean up channels from the member list
+                if puppet.id in allowed_tgids or puppet.is_channel:
                     continue
-                if self.bot and puppet_id == self.bot.tgid:
+                if self.bot and puppet.id == self.bot.tgid:
                     await self.bot.remove_chat(self.tgid)
                 try:
                     await self.main_intent.kick_user(
@@ -1104,21 +1130,48 @@ class Portal(DBPortal, BasePortal):
     async def _update_title(
         self, title: str, sender: p.Puppet | None = None, save: bool = False
     ) -> bool:
-        if self.title == title:
+        if self.title == title and self.name_set:
             return False
 
         self.title = title
-        await self._try_set_state(
-            sender, EventType.ROOM_NAME, RoomNameStateEventContent(name=self.title)
-        )
+        try:
+            await self._try_set_state(
+                sender, EventType.ROOM_NAME, RoomNameStateEventContent(name=self.title)
+            )
+            self.name_set = True
+        except Exception as e:
+            self.log.warning(f"Failed to set room name: {e}")
+            self.name_set = False
         if save:
             await self.save()
         return True
 
+    async def _update_avatar_from_puppet(
+        self, puppet: p.Puppet, user: au.AbstractUser | None, photo: UserProfilePhoto | None
+    ) -> bool:
+        if self.photo_id == puppet.photo_id and self.avatar_set:
+            return False
+        if puppet.avatar_url:
+            self.photo_id = puppet.photo_id
+            self.avatar_url = puppet.avatar_url
+            try:
+                await self._try_set_state(
+                    None, EventType.ROOM_AVATAR, RoomAvatarStateEventContent(url=self.avatar_url)
+                )
+                self.avatar_set = True
+            except Exception as e:
+                self.log.warning(f"Failed to set room avatar: {e}")
+                self.avatar_set = False
+            return True
+        elif photo is not None and user is not None:
+            return await self._update_avatar(user, photo=photo)
+        else:
+            return False
+
     async def _update_avatar(
         self,
         user: au.AbstractUser,
-        photo: TypeChatPhoto,
+        photo: TypeChatPhoto | TypeUserProfilePhoto,
         sender: p.Puppet | None = None,
         save: bool = False,
     ) -> bool:
@@ -1141,26 +1194,27 @@ class Portal(DBPortal, BasePortal):
             and not self.config["bridge.allow_avatar_remove"]
         ):
             return False
-        if self.photo_id != photo_id:
+        if self.photo_id != photo_id or not self.avatar_set:
             if not photo_id:
-                await self._try_set_state(
-                    sender, EventType.ROOM_AVATAR, RoomAvatarStateEventContent(url=None)
-                )
                 self.photo_id = ""
                 self.avatar_url = None
-                if save:
-                    await self.save()
-                return True
-            file = await util.transfer_file_to_matrix(user.client, self.main_intent, loc)
-            if file:
-                await self._try_set_state(
-                    sender, EventType.ROOM_AVATAR, RoomAvatarStateEventContent(url=file.mxc)
-                )
+            elif self.photo_id != photo_id or not self.avatar_url:
+                file = await util.transfer_file_to_matrix(user.client, self.main_intent, loc)
+                if not file:
+                    return False
                 self.photo_id = photo_id
                 self.avatar_url = file.mxc
-                if save:
-                    await self.save()
-                return True
+            try:
+                await self._try_set_state(
+                    sender, EventType.ROOM_AVATAR, RoomAvatarStateEventContent(url=self.avatar_url)
+                )
+                self.avatar_set = True
+            except Exception as e:
+                self.log.warning(f"Failed to set room avatar: {e}")
+                self.avatar_set = False
+            if save:
+                await self.save()
+            return True
         return False
 
     # endregion
@@ -1193,6 +1247,7 @@ class Portal(DBPortal, BasePortal):
             "mxid": user.mxid,
             "username": user.mxid_localpart,
             "displayname": escape_html(displayname),
+            "distinguisher": self._get_distinguisher(user.mxid),
             **kwargs,
         }
         return Template(tpl).safe_substitute(tpl_args)
@@ -1409,6 +1464,28 @@ class Portal(DBPortal, BasePortal):
             # We'll just assume the user is already in the chat.
             pass
 
+    @staticmethod
+    def hash_user_id(val: UserID) -> int:
+        """
+        A simple Matrix user ID hashing algorithm that matches what Element does.
+
+        Args:
+            val: the Matrix user ID.
+
+        Returns:
+            A 32-bit hash of the user ID.
+        """
+        out = 0
+        for char in val:
+            out = (out << 5) - out + ord(char)
+            # Emulate JS's 32-bit signed bitwise OR `hash |= 0`
+            out = (out & 2**31 - 1) - (out & 2**31)
+        return abs(out)
+
+    def _get_distinguisher(self, user_id: UserID) -> str:
+        ruds = self.get_config("relay_user_distinguishers") or []
+        return ruds[self.hash_user_id(user_id) % len(ruds)] if ruds else ""
+
     async def _apply_msg_format(self, sender: u.User, content: MessageEventContent) -> None:
         if not isinstance(content, TextMessageEventContent) or content.format != Format.HTML:
             content.format = Format.HTML
@@ -1426,6 +1503,7 @@ class Portal(DBPortal, BasePortal):
             message=content.formatted_body,
             body=content.body,
             formatted_body=content.formatted_body,
+            distinguisher=self._get_distinguisher(sender.mxid),
         )
         content.formatted_body = Template(tpl).safe_substitute(tpl_args)
 
@@ -1517,7 +1595,8 @@ class Portal(DBPortal, BasePortal):
         else:
             w = h = None
         file_name = content["net.maunium.telegram.internal.filename"]
-        max_image_size = self.config["bridge.image_as_file_size"] * 1000 ** 2
+        max_image_size = self.config["bridge.image_as_file_size"] * 1000**2
+        max_image_pixels = self.config["bridge.image_as_file_pixels"]
 
         if self.config["bridge.parallel_file_transfer"] and content.url:
             file_handle, file_size = await util.parallel_transfer_to_telegram(
@@ -1550,12 +1629,14 @@ class Portal(DBPortal, BasePortal):
             file_size = len(file)
 
         file_handle.name = file_name
+        force_document = file_size >= max_image_size
 
         attributes = [DocumentAttributeFilename(file_name=file_name)]
         if w and h:
             attributes.append(DocumentAttributeImageSize(w, h))
+            force_document = force_document or w * h >= max_image_pixels
 
-        if (mime == "image/png" or mime == "image/jpeg") and file_size < max_image_size:
+        if (mime == "image/png" or mime == "image/jpeg") and not force_document:
             media = InputMediaUploadedPhoto(file_handle)
         else:
             media = InputMediaUploadedDocument(
@@ -1637,7 +1718,11 @@ class Portal(DBPortal, BasePortal):
         except (KeyError, ValueError):
             self.log.exception("Failed to parse location")
             return None
-        caption, entities = await formatter.matrix_to_telegram(client, text=content.body)
+        try:
+            caption = content["org.matrix.msc3488.location"]["description"]
+            entities = []
+        except KeyError:
+            caption, entities = await formatter.matrix_to_telegram(client, text=content.body)
         media = MessageMediaGeo(geo=GeoPoint(lat=lat, long=long, access_hash=0))
 
         async with self.send_lock(sender_id):
@@ -2087,11 +2172,8 @@ class Portal(DBPortal, BasePortal):
     async def enable_dm_encryption(self) -> bool:
         ok = await super().enable_dm_encryption()
         if ok:
-            try:
-                puppet = await p.Puppet.get_by_tgid(self.tgid)
-                await self.main_intent.set_room_name(self.mxid, puppet.displayname)
-            except Exception:
-                self.log.warning(f"Failed to set room name", exc_info=True)
+            puppet = await p.Puppet.get_by_tgid(self.tgid)
+            await self.update_info_from_puppet(puppet)
         return ok
 
     # endregion
@@ -2111,15 +2193,6 @@ class Portal(DBPortal, BasePortal):
             return f"https://t.me/c/{self.tgid}/{evt.id}"
         return None
 
-    async def _expire_telegram_photo(self, intent: IntentAPI, event_id: EventID, ttl: int) -> None:
-        try:
-            content = TextMessageEventContent(msgtype=MessageType.NOTICE, body="Photo has expired")
-            content.set_edit(event_id)
-            await asyncio.sleep(ttl)
-            await self._send_message(intent, content)
-        except Exception:
-            self.log.warning("Failed to expire Telegram photo %s", event_id, exc_info=True)
-
     async def _handle_telegram_photo(
         self, source: au.AbstractUser, intent: IntentAPI, evt: Message, relates_to: RelatesTo
     ) -> EventID | None:
@@ -2128,6 +2201,7 @@ class Portal(DBPortal, BasePortal):
             return await self._send_message(
                 intent,
                 TextMessageEventContent(msgtype=MessageType.NOTICE, body="Photo has expired"),
+                timestamp=evt.date,
             )
         loc, largest_size = self._get_largest_photo_size(media.photo)
         if loc is None:
@@ -2176,13 +2250,15 @@ class Portal(DBPortal, BasePortal):
             content.url = file.mxc
         result = await self._send_message(intent, content, timestamp=evt.date)
         if media.ttl_seconds:
-            asyncio.create_task(self._expire_telegram_photo(intent, result, media.ttl_seconds))
+            await DisappearingMessage(self.mxid, result, media.ttl_seconds).insert()
         if evt.message:
             caption_content = await formatter.telegram_to_matrix(
                 evt, source, self.main_intent, no_reply_fallback=True
             )
             caption_content.external_url = content.external_url
             result = await self._send_message(intent, caption_content, timestamp=evt.date)
+            if media.ttl_seconds:
+                await DisappearingMessage(self.mxid, result, media.ttl_seconds).insert()
         return result
 
     @staticmethod
@@ -2280,7 +2356,7 @@ class Portal(DBPortal, BasePortal):
 
         attrs = self._parse_telegram_document_attributes(document.attributes)
 
-        if document.size > self.config["bridge.max_document_size"] * 1000 ** 2:
+        if document.size > self.config["bridge.max_document_size"] * 1000**2:
             name = attrs.name or ""
             caption = f"\n{evt.message}" if evt.message else ""
             # TODO encrypt
@@ -2360,17 +2436,21 @@ class Portal(DBPortal, BasePortal):
         else:
             content.url = file.mxc
         res = await self._send_message(intent, content, event_type=event_type, timestamp=evt.date)
+        if evt.media.ttl_seconds:
+            await DisappearingMessage(self.mxid, res, evt.media.ttl_seconds).insert()
         if evt.message:
             caption_content = await formatter.telegram_to_matrix(
                 evt, source, self.main_intent, no_reply_fallback=True
             )
             caption_content.external_url = content.external_url
             res = await self._send_message(intent, caption_content, timestamp=evt.date)
+            if evt.media.ttl_seconds:
+                await DisappearingMessage(self.mxid, res, evt.media.ttl_seconds).insert()
         return res
 
-    def _handle_telegram_location(
-        self, source: au.AbstractUser, intent: IntentAPI, evt: Message, relates_to: RelatesTo
-    ) -> Awaitable[EventID]:
+    def _location_message_to_content(
+        self, evt: Message, relates_to: RelatesTo, note: str
+    ) -> LocationMessageEventContent:
         long = evt.media.geo.long
         lat = evt.media.geo.lat
         long_char = "E" if long > 0 else "W"
@@ -2383,13 +2463,36 @@ class Portal(DBPortal, BasePortal):
         content = LocationMessageEventContent(
             msgtype=MessageType.LOCATION,
             geo_uri=f"geo:{geo}",
-            body=f"Location: {body}\n{url}",
+            body=f"{note}: {body}\n{url}",
             relates_to=relates_to,
             external_url=self._get_external_url(evt),
         )
         content["format"] = str(Format.HTML)
-        content["formatted_body"] = f"Location: <a href='{url}'>{body}</a>"
+        content["formatted_body"] = f"{note}: <a href='{url}'>{body}</a>"
+        content["org.matrix.msc3488.location"] = {
+            "uri": content.geo_uri,
+            "description": note,
+        }
+        return content
 
+    def _handle_telegram_location(
+        self, source: au.AbstractUser, intent: IntentAPI, evt: Message, relates_to: RelatesTo
+    ) -> Awaitable[EventID]:
+        content = self._location_message_to_content(evt, relates_to, "Location")
+        return self._send_message(intent, content, timestamp=evt.date)
+
+    def _handle_telegram_live_location(
+        self, source: au.AbstractUser, intent: IntentAPI, evt: Message, relates_to: RelatesTo
+    ) -> Awaitable[EventID]:
+        content = self._location_message_to_content(
+            evt, relates_to, "Live Location (see your Telegram client for live updates)"
+        )
+        return self._send_message(intent, content, timestamp=evt.date)
+
+    def _handle_telegram_venue(
+        self, source: au.AbstractUser, intent: IntentAPI, evt: Message, relates_to: RelatesTo
+    ) -> Awaitable[EventID]:
+        content = self._location_message_to_content(evt, relates_to, evt.media.title)
         return self._send_message(intent, content, timestamp=evt.date)
 
     async def _handle_telegram_text(
@@ -2719,52 +2822,67 @@ class Portal(DBPortal, BasePortal):
             self.log.debug(f"Iterating all messages starting with {min_id} (approx: {limit})")
             messages = client.iter_messages(entity, reverse=True, min_id=min_id)
             async for message in messages:
-                sender = (
-                    await p.Puppet.get_by_tgid(TelegramID(message.from_id.user_id))
-                    if isinstance(message.from_id, PeerUser)
-                    else None
-                )
-                # TODO handle service messages?
-                await self.handle_telegram_message(source, sender, message)
+                await self._handle_telegram_backfill_message(source, message)
                 count += 1
         else:
             self.log.debug(f"Fetching up to {limit} most recent messages")
             messages = await client.get_messages(entity, limit=limit)
             for message in reversed(messages):
-                sender = (
-                    await p.Puppet.get_by_tgid(TelegramID(message.from_id.user_id))
-                    if isinstance(message.from_id, PeerUser)
-                    else None
-                )
-                await self.handle_telegram_message(source, sender, message)
+                await self._handle_telegram_backfill_message(source, message)
                 count += 1
         return count
 
-    def _split_dm_reaction_counts(self, counts: list[ReactionCount]) -> list[MessageUserReaction]:
+    async def _handle_telegram_backfill_message(
+        self, source: au.AbstractUser, msg: Message | MessageService
+    ) -> None:
+        if msg.from_id and isinstance(msg.from_id, (PeerUser, PeerChannel)):
+            sender = await p.Puppet.get_by_peer(msg.from_id)
+        elif isinstance(msg.peer_id, PeerUser):
+            if msg.out:
+                sender = await p.Puppet.get_by_tgid(source.tgid)
+            else:
+                sender = await p.Puppet.get_by_peer(msg.peer_id)
+        else:
+            sender = None
+        if isinstance(msg, MessageService):
+            if isinstance(msg.action, MessageActionContactSignUp):
+                await self.handle_telegram_joined(source, sender, msg, backfill=True)
+            else:
+                self.log.debug(
+                    f"Unhandled service message {type(msg.action).__name__} in backfill"
+                )
+        elif isinstance(msg, Message):
+            await self.handle_telegram_message(source, sender, msg)
+        else:
+            self.log.debug(f"Unhandled message type {type(msg).__name__} in backfill")
+
+    def _split_dm_reaction_counts(self, counts: list[ReactionCount]) -> list[MessagePeerReaction]:
         if len(counts) == 1:
             item = counts[0]
             if item.count == 2:
                 return [
-                    MessageUserReaction(reaction=item.reaction, user_id=self.tgid),
-                    MessageUserReaction(reaction=item.reaction, user_id=self.tg_receiver),
+                    MessagePeerReaction(reaction=item.reaction, peer_id=PeerUser(self.tgid)),
+                    MessagePeerReaction(
+                        reaction=item.reaction, peer_id=PeerUser(self.tg_receiver)
+                    ),
                 ]
             elif item.count == 1:
                 return [
-                    MessageUserReaction(
+                    MessagePeerReaction(
                         reaction=item.reaction,
-                        user_id=self.tg_receiver if item.chosen else self.tgid,
+                        peer_id=PeerUser(self.tg_receiver if item.chosen else self.tgid),
                     ),
                 ]
         elif len(counts) == 2:
             item1, item2 = counts
             return [
-                MessageUserReaction(
+                MessagePeerReaction(
                     reaction=item1.reaction,
-                    user_id=self.tg_receiver if item1.chosen else self.tgid,
+                    peer_id=PeerUser(self.tg_receiver if item1.chosen else self.tgid),
                 ),
-                MessageUserReaction(
+                MessagePeerReaction(
                     reaction=item2.reaction,
-                    user_id=self.tg_receiver if item2.chosen else self.tgid,
+                    peer_id=PeerUser(self.tg_receiver if item2.chosen else self.tgid),
                 ),
             ]
         return []
@@ -2799,7 +2917,7 @@ class Portal(DBPortal, BasePortal):
                 return
 
         total_count = sum(item.count for item in data.results)
-        recent_reactions = data.recent_reactons or []
+        recent_reactions = data.recent_reactions or []
         if not recent_reactions and total_count > 0:
             if self.peer_type == "user":
                 recent_reactions = self._split_dm_reaction_counts(data.results)
@@ -2818,9 +2936,13 @@ class Portal(DBPortal, BasePortal):
             await self._handle_telegram_reactions_locked(dbm, recent_reactions, total_count)
 
     async def _handle_telegram_reactions_locked(
-        self, msg: DBMessage, reaction_list: list[MessageUserReaction], total_count: int
+        self, msg: DBMessage, reaction_list: list[MessagePeerReaction], total_count: int
     ) -> None:
-        reactions = {reaction.user_id: reaction.reaction for reaction in reaction_list}
+        reactions = {
+            p.Puppet.get_id_from_peer(reaction.peer_id): reaction.reaction
+            for reaction in reaction_list
+            if isinstance(reaction.peer_id, (PeerUser, PeerChannel))
+        }
         is_full = len(reactions) == total_count
 
         existing_reactions = await DBReaction.get_all_by_message(msg.mxid, msg.mx_room)
@@ -2930,10 +3052,10 @@ class Portal(DBPortal, BasePortal):
 
         if sender and not sender.displayname:
             self.log.debug(
-                f"Telegram user {sender.tgid} sent a message, but doesn't have a "
-                "displayname, updating info..."
+                f"Telegram user {sender.tgid} sent a message, but doesn't have a displayname,"
+                " updating info..."
             )
-            entity = await source.client.get_entity(PeerUser(sender.tgid))
+            entity = await source.client.get_entity(sender.peer)
             await sender.update_info(source, entity)
             if not sender.displayname:
                 self.log.debug(
@@ -2945,6 +3067,8 @@ class Portal(DBPortal, BasePortal):
             MessageMediaPhoto,
             MessageMediaDocument,
             MessageMediaGeo,
+            MessageMediaGeoLive,
+            MessageMediaVenue,
             MessageMediaGame,
             MessageMediaDice,
             MessageMediaPoll,
@@ -2967,6 +3091,8 @@ class Portal(DBPortal, BasePortal):
                 MessageMediaPhoto: self._handle_telegram_photo,
                 MessageMediaDocument: self._handle_telegram_document,
                 MessageMediaGeo: self._handle_telegram_location,
+                MessageMediaGeoLive: self._handle_telegram_live_location,
+                MessageMediaVenue: self._handle_telegram_venue,
                 MessageMediaPoll: self._handle_telegram_poll,
                 MessageMediaDice: self._handle_telegram_dice,
                 MessageMediaUnsupported: self._handle_telegram_unsupported,
@@ -3088,8 +3214,37 @@ class Portal(DBPortal, BasePortal):
         elif isinstance(action, MessageActionGameScore):
             # TODO handle game score
             pass
+        elif isinstance(action, MessageActionContactSignUp):
+            await self.handle_telegram_joined(source, sender, update)
         else:
             self.log.trace("Unhandled Telegram action in %s: %s", self.title, action)
+
+    async def handle_telegram_joined(
+        self,
+        source: au.AbstractUser,
+        sender: p.Puppet,
+        update: MessageService,
+        backfill: bool = False,
+    ) -> None:
+        assert isinstance(update.action, MessageActionContactSignUp)
+        content = TextMessageEventContent(msgtype=MessageType.EMOTE, body="joined Telegram")
+        event_id = await self._send_message(
+            sender.intent_for(self), content, timestamp=update.date
+        )
+        await DBMessage(
+            tgid=TelegramID(update.id),
+            mx_room=self.mxid,
+            mxid=event_id,
+            tg_space=source.tgid,
+            edit_index=0,
+        ).insert()
+        # Automatically mark the notice as read if we're backfilling messages, mostly so that
+        # empty rooms created before the notice was added wouldn't become unread when the notice
+        # is backfilled in.
+        if backfill:
+            double_puppet = await p.Puppet.get_by_tgid(source.tgid)
+            if double_puppet and double_puppet.is_real_user:
+                await double_puppet.intent.mark_read(self.mxid, event_id)
 
     async def set_telegram_admin(self, user_id: TelegramID) -> None:
         puppet = await p.Puppet.get_by_tgid(user_id)
@@ -3275,8 +3430,10 @@ class Portal(DBPortal, BasePortal):
             self.by_mxid[self.mxid] = self
 
     @classmethod
-    async def all(cls) -> AsyncGenerator[Portal, None]:
-        portals = await super().all()
+    async def _yield_portals(
+        cls, query: Awaitable[list[DBPortal]]
+    ) -> AsyncGenerator[Portal, None]:
+        portals = await query
         portal: cls
         for portal in portals:
             try:
@@ -3286,15 +3443,16 @@ class Portal(DBPortal, BasePortal):
                 yield portal
 
     @classmethod
-    async def find_private_chats(cls, tg_receiver: TelegramID) -> AsyncGenerator[Portal, None]:
-        portals = await super().find_private_chats(tg_receiver)
-        portal: cls
-        for portal in portals:
-            try:
-                yield cls.by_tgid[portal.tgid_full]
-            except KeyError:
-                await portal.postinit()
-                yield portal
+    def all(cls) -> AsyncGenerator[Portal, None]:
+        return cls._yield_portals(super().all())
+
+    @classmethod
+    def find_private_chats_of(cls, tg_receiver: TelegramID) -> AsyncGenerator[Portal, None]:
+        return cls._yield_portals(super().find_private_chats_of(tg_receiver))
+
+    @classmethod
+    def find_private_chats_with(cls, tgid: TelegramID) -> AsyncGenerator[Portal, None]:
+        return cls._yield_portals(super().find_private_chats_with(tgid))
 
     @classmethod
     @async_getter_lock

@@ -95,8 +95,6 @@ class Config(BaseBridgeConfig):
         if "pool_pre_ping" in base["appservice.database_opts"]:
             del base["appservice.database_opts.pool_pre_ping"]
 
-        copy("appservice.community_id")
-
         copy("metrics.enabled")
         copy("metrics.listen_port")
 
@@ -138,11 +136,14 @@ class Config(BaseBridgeConfig):
         copy("bridge.invite_link_resolve")
         copy("bridge.inline_images")
         copy("bridge.image_as_file_size")
+        copy("bridge.image_as_file_pixels")
         copy("bridge.max_document_size")
         copy("bridge.parallel_file_transfer")
         copy("bridge.federate_rooms")
         copy("bridge.animated_sticker.target")
-        copy("bridge.animated_sticker.args")
+        copy("bridge.animated_sticker.args.width")
+        copy("bridge.animated_sticker.args.height")
+        copy("bridge.animated_sticker.args.fps")
         copy("bridge.encryption.allow")
         copy("bridge.encryption.default")
         copy("bridge.encryption.database")
@@ -181,6 +182,7 @@ class Config(BaseBridgeConfig):
             del self["bridge.message_formats"]
         copy_dict("bridge.message_formats", override_existing_map=False)
         copy("bridge.emote_format")
+        copy("bridge.relay_user_distinguishers")
 
         copy("bridge.state_event_formats.join")
         copy("bridge.state_event_formats.leave")

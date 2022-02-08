@@ -243,7 +243,7 @@ class User(DBUser, AbstractUser, BaseUser):
                 )
             else:
                 await self.push_bridge_state(
-                    BridgeStateEvent.UNKNOWN_ERROR, ttl=240, error="tg-not-connected"
+                    BridgeStateEvent.TRANSIENT_DISCONNECT, ttl=240, error="tg-not-connected"
                 )
 
     async def fill_bridge_state(self, state: BridgeState) -> None:
@@ -451,7 +451,7 @@ class User(DBUser, AbstractUser, BaseUser):
     async def get_direct_chats(self) -> dict[UserID, list[RoomID]]:
         return {
             pu.Puppet.get_mxid_from_id(portal.tgid): [portal.mxid]
-            async for portal in po.Portal.find_private_chats(self.tgid)
+            async for portal in po.Portal.find_private_chats_of(self.tgid)
             if portal.mxid
         }
 
