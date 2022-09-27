@@ -99,19 +99,57 @@ metrics:
 telemetry:
     # Enable usage telemetry. Mandatory for on-premise installations.
     enabled: false
+
     # EMS instance identifier.
     # Set to "generate" to generate and save a new ID.
     # Alternatively, set the "MAUTRIX_TELEGRAM_LICENCE_PATH" environment variable to specify
     # a file to read the ID from, which is generated if it does not exist.
     # If neither instance_id nor a file path are set, a default file is used.
     instance_id: generate
-    # The EMS endpoint to submit telemetry entries to.
-    # If set to a blank string, no telemetry is sent, but is still gathered.
-    endpoint: https://ems.element.io/api/remote/telemetry
-    # How many times to retry sending telemetry if it fails.
-    retry_count: 3
-    # How long to wait between retries, in seconds.
-    retry_interval: 60
+
+    # Config for the Matrix room in which telemetry data will be stored.
+    matrix_destination:
+        # If room creation (see below) is disabled, this must refer to an existing
+        # local or federated room, and the bridge bot will attempt to join it.
+        # If room creation is enabled, this must refer to a local room,
+        # or be left unspecified if the created room does not need an alias.
+        room_id_or_alias:
+
+        # Options for initializing a telemetry room.
+        room_creation:
+            # If disabled, the bridge will not attempt to create a telemetry room,
+            # and "room_id_or_alias" must refer to an existing room.
+            enabled: true
+
+            # Options to pass through to the room creation request
+            # (see "Request body" in the corresponding Matrix spec end-point:
+            # https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3createroom).
+            # If the room referred to by "room_id_or_alias" does not exist, or
+            # if "room_id_or_alias" is unspecified and no telemetry room yet exists,
+            # the bridge will attempt to create a room with the options provided.
+            # This bridge provides sane default creation options which this object
+            # may override (just be careful, e.g. with power levels required by this bridge).
+            # This option is only relevant to when the room is first created (i.e. updating
+            # the option and reloading the bridge will not affect a previously created room).
+            options: {}
+
+    # Optional config for sending telemetry to an external HTTP endpoint.
+    http_destination:
+        # Enable sending telemetry to an endpoint.
+        # If disabled, no telemetry is sent, but is still gathered in a Matrix room.
+        enabled: false
+        # "Basic" HTTP authentication credentials.
+        credentials:
+            username: user
+            password: pass
+        # Per transmission period, the maximum quantity of attempts (during
+        # failures) to make for each request.
+        num_attempts: 3
+        # Quantity of seconds between each request attempt.
+        # Can be a fractional number.
+        retry_delay: 5
+        # Where the telemetry will be POST'ed to.
+        submission_url: https://ems.element.io/api/remote/telemetry
 
 # Manhole config.
 manhole:
