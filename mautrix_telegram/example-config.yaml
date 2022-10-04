@@ -111,7 +111,7 @@ telemetry:
     matrix_destination:
         # If room creation (see below) is disabled, this must refer to an existing
         # local or federated room, and the bridge bot will attempt to join it.
-        # If room creation is enabled, this must refer to a local room,
+        # If room creation is enabled, this must refer to a local room alias,
         # or be left unspecified if the created room does not need an alias.
         room_id_or_alias:
 
