@@ -148,7 +148,7 @@ class TelegramBridge(Bridge):
                 "**"
             )
         else:
-            instance_id = get_instance_id(self.config["telemetry.instance_id"], self.log)
+            instance_id = get_instance_id(self.log)
             self.log.info(f"License ID: {instance_id}")
             self._telemetry_service = TelemetryService(self, instance_id)
 

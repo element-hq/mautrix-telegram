@@ -100,13 +100,6 @@ telemetry:
     # Enable usage telemetry. Mandatory for on-premise installations.
     enabled: false
 
-    # EMS instance identifier.
-    # Set to "generate" to generate and save a new ID.
-    # Alternatively, set the "MAUTRIX_TELEGRAM_LICENSE_PATH" environment variable to specify
-    # a file to read the ID from, which is generated if it does not exist.
-    # If neither instance_id nor a file path are set, a default file is used.
-    instance_id: generate
-
     # Config for the Matrix room in which telemetry data will be stored.
     matrix_destination:
         # If room creation (see below) is disabled, this must refer to an existing

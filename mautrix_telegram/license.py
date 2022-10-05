@@ -16,36 +16,32 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 import logging
 import os
 
-_instance_id: str | None = None
+_instance_id = os.environ.get("MAUTRIX_TELEGRAM_LICENSE_ID")
 
 
-def get_instance_id(default_id: str, log: logging.Logger = logging.getLogger()) -> str:
+def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
     global _instance_id
     if not _instance_id:
-        license_file_path = os.environ.get("MAUTRIX_TELEGRAM_LICENSE_PATH")
-        if not license_file_path and default_id:
-            _instance_id = default_id
-        else:
-            if not license_file_path:
-                license_file_path = os.path.abspath("../instanceId")
+        license_file_path = (
+            os.environ.get("MAUTRIX_TELEGRAM_LICENSE_PATH") or
+            str(Path(__file__).parents[1].joinpath("licenses", "instanceId"))
+        )
+        try:
+            with open(license_file_path) as license_file:
+                _instance_id = license_file.read().strip()
+        except:
+            log.info("License ID not present. Generating new key...")
+            _instance_id = str(uuid4())
             try:
-                with open(license_file_path) as license_file:
-                    _instance_id = license_file.read().strip()
-            except:
-                log.info("License ID not present. Generating new key...")
-                _instance_id = generate_instance_id()
-                try:
-                    with open(license_file_path, "w") as license_file:
-                        license_file.write(_instance_id)
-                except Exception as e:
-                    log.error(f"Failed to write license key {_instance_id} to disk ({e})")
+                os.makedirs(os.path.dirname(license_file_path), exist_ok=True)
+                with open(license_file_path, "w") as license_file:
+                    license_file.write(_instance_id)
+            except Exception as e:
+                log.error(f"Failed to write license key ({_instance_id}) to disk ({license_file_path}): {e}")
 
     return _instance_id
-
-
-def generate_instance_id() -> str:
-    return str(uuid4())
