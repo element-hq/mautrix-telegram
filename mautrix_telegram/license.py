@@ -26,9 +26,8 @@ _instance_id = os.environ.get("MAUTRIX_TELEGRAM_LICENSE_ID")
 def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
     global _instance_id
     if not _instance_id:
-        license_file_path = (
-            os.environ.get("MAUTRIX_TELEGRAM_LICENSE_PATH") or
-            os.path.abspath(os.path.join("licenses", "instanceId"))
+        license_file_path = os.environ.get("MAUTRIX_TELEGRAM_LICENSE_PATH") or os.path.abspath(
+            os.path.join("licenses", "instanceId")
         )
         try:
             with open(license_file_path) as license_file:
@@ -43,6 +42,8 @@ def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
                 with open(license_file_path, "w") as license_file:
                     license_file.write(_instance_id)
             except Exception as e:
-                raise Exception(f"Failed to write license key ({_instance_id}) to disk ({license_file_path})") from e
+                raise Exception(
+                    f"Failed to write license key ({_instance_id}) to disk ({license_file_path})"
+                ) from e
 
     return _instance_id
