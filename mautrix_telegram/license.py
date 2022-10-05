@@ -35,6 +35,8 @@ def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
             with open(license_file_path) as license_file:
                 _instance_id = license_file.read().strip()
         except:
+            pass
+        if _instance_id is None:
             log.info("License ID not present. Generating new key...")
             _instance_id = str(uuid4())
             try:
@@ -42,6 +44,6 @@ def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
                 with open(license_file_path, "w") as license_file:
                     license_file.write(_instance_id)
             except Exception as e:
-                log.error(f"Failed to write license key ({_instance_id}) to disk ({license_file_path}): {e}")
+                raise Exception(f"Failed to write license key ({_instance_id}) to disk ({license_file_path})") from e
 
     return _instance_id
