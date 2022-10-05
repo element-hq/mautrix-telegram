@@ -16,7 +16,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-from pathlib import Path
 from uuid import uuid4
 import logging
 import os
@@ -29,7 +28,7 @@ def get_instance_id(log: logging.Logger = logging.getLogger()) -> str:
     if not _instance_id:
         license_file_path = (
             os.environ.get("MAUTRIX_TELEGRAM_LICENSE_PATH") or
-            str(Path(__file__).parents[1].joinpath("licenses", "instanceId"))
+            os.path.abspath(os.path.join("licenses", "instanceId"))
         )
         try:
             with open(license_file_path) as license_file:
