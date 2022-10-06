@@ -14,27 +14,27 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""Types to describe the format of telemetry payloads."""
+
 from __future__ import annotations
 
 from attr import dataclass
 
 from mautrix.types import SerializableAttrs
 
-TELEMETRY_TYPE = "net.maunium.telegram"
 
-
-@dataclass
+@dataclass(kw_only=True)
 class TelemetryVersion(SerializableAttrs):
     """
     Telemetry payload properties that describe the format of payloads sent by
     the current version of the bridge.
     """
 
-    version = 1
-    type = TELEMETRY_TYPE
+    version: int = 1
+    type: str = "net.maunium.telegram"
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TelemetryInstance(SerializableAttrs):
     """Telemetry payload properties that depend on bridge configuration."""
 
@@ -42,8 +42,8 @@ class TelemetryInstance(SerializableAttrs):
     hostname: str
 
 
-@dataclass
-class TelemetryEvent(TelemetryVersion, TelemetryInstance):
+@dataclass(kw_only=True)
+class Telemetry(TelemetryVersion, TelemetryInstance):
     """Top-level class for telemetry event payloads."""
 
     generationTime: int

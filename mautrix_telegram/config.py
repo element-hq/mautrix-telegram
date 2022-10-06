@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from typing import Any, List, NamedTuple
 import os
+import re
 
 from ruamel.yaml.comments import CommentedMap
 
@@ -22,8 +23,6 @@ from mautrix.bridge.config import BaseBridgeConfig
 from mautrix.client import Client
 from mautrix.types import UserID
 from mautrix.util.config import ConfigUpdateHelper, ForbiddenDefault, ForbiddenKey
-
-from .license import generate_instance_id
 
 Permissions = NamedTuple(
     "Permissions",
@@ -105,12 +104,17 @@ class Config(BaseBridgeConfig):
         copy("metrics.listen_port")
 
         copy("telemetry.enabled")
-        copy("telemetry.instance_id")
-        if base["telemetry.instance_id"] == "generate":
-            base["telemetry.instance_id"] = generate_instance_id()
-        copy("telemetry.endpoint")
-        copy("telemetry.retry_count")
-        copy("telemetry.retry_interval")
+
+        copy("telemetry.matrix_destination.room_id_or_alias")
+        copy("telemetry.matrix_destination.room_creation.enabled")
+        copy("telemetry.matrix_destination.room_creation.options")
+
+        copy("telemetry.http_destination.enabled")
+        copy("telemetry.http_destination.credentials.username")
+        copy("telemetry.http_destination.credentials.password")
+        copy("telemetry.http_destination.num_attempts")
+        copy("telemetry.http_destination.retry_delay")
+        copy("telemetry.http_destination.submission_url")
 
         copy("bridge.username_template")
         copy("bridge.alias_template")
@@ -293,3 +297,18 @@ class Config(BaseBridgeConfig):
             return self._get_permissions(homeserver)
 
         return self._get_permissions("*")
+
+    @property
+    def namespaces(self) -> dict[str, list[dict[str, Any]]]:
+        ns = super().namespaces
+        if self["telemetry.matrix_destination.room_creation.enabled"]:
+            telemetry_room_alias = self["telemetry.matrix_destination.room_id_or_alias"]
+            if telemetry_room_alias:
+                aliases = ns.setdefault("aliases", [])
+                aliases.append(
+                    {
+                        "exclusive": False,
+                        "regex": re.escape(telemetry_room_alias),
+                    }
+                )
+        return ns
