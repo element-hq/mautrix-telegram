@@ -5,7 +5,7 @@ aiosqlite==0.17.0
 appdirs==1.4.4
 asn1crypto==1.4.0
 async-timeout==4.0.1
-asyncpg==0.25.0
+asyncpg==0.26.0
 attrs==21.2.0
 Automat==20.2.0
 Brotli==1.0.9
@@ -40,7 +40,7 @@ incremental==21.3.0
 lockfile==0.12.2
 Mako==1.2.0
 MarkupSafe==2.1.1
-mautrix==0.16.0
+mautrix==0.18.2
 moviepy==1.0.3
 msgpack==1.0.2
 multidict==5.2.0
@@ -76,7 +76,7 @@ six==1.16.0
 toml==0.10.2
 tomli==1.2.2
 tqdm==4.62.3
-tulir-telethon==1.25.0a7
+tulir-telethon==1.26.0a5
 Twisted==21.7.0
 typing-extensions==3.10.0.2
 unpaddedbase64==2.1.0

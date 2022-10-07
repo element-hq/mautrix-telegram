@@ -29,6 +29,7 @@ from .. import SECTION_PORTAL_MANAGEMENT, CommandEvent, command_handler
 
 @command_handler(
     needs_auth=False,
+    needs_puppeting=False,
     help_section=SECTION_PORTAL_MANAGEMENT,
     help_text="View or change per-portal settings.",
     help_args="<`help`|_subcommand_> [...]",
@@ -98,7 +99,7 @@ def config_defaults(evt: CommandEvent) -> Awaitable[EventID]:
                 "exceptions": evt.config["bridge.bridge_notices.exceptions"],
             },
             "bot_messages_as_notices": evt.config["bridge.bot_messages_as_notices"],
-            "inline_images": evt.config["bridge.inline_images"],
+            "caption_in_message": evt.config["bridge.caption_in_message"],
             "message_formats": evt.config["bridge.message_formats"],
             "emote_format": evt.config["bridge.emote_format"],
             "state_event_formats": evt.config["bridge.state_event_formats"],

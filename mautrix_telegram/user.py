@@ -26,10 +26,12 @@ from telethon.tl.functions.contacts import GetContactsRequest, SearchRequest
 from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import (
+    Channel,
     Chat,
     ChatForbidden,
     InputUserSelf,
     NotifyPeer,
+    PeerUser,
     TypeUpdate,
     UpdateFolderPeers,
     UpdateNewChannelMessage,
@@ -91,6 +93,7 @@ class User(DBUser, AbstractUser, BaseUser):
         tg_username: str | None = None,
         tg_phone: str | None = None,
         is_bot: bool = False,
+        is_premium: bool = False,
         saved_contacts: int = 0,
     ) -> None:
         super().__init__(
@@ -99,6 +102,7 @@ class User(DBUser, AbstractUser, BaseUser):
             tg_username=tg_username,
             tg_phone=tg_phone,
             is_bot=is_bot,
+            is_premium=is_premium,
             saved_contacts=saved_contacts,
         )
         AbstractUser.__init__(self)
@@ -129,6 +133,10 @@ class User(DBUser, AbstractUser, BaseUser):
     @property
     def human_tg_id(self) -> str:
         return f"@{self.tg_username}" if self.tg_username else f"+{self.tg_phone}" or None
+
+    @property
+    def peer(self) -> PeerUser | None:
+        return PeerUser(user_id=self.tgid) if self.tgid else None
 
     # TODO replace with proper displayname getting everywhere
     @property
@@ -287,7 +295,9 @@ class User(DBUser, AbstractUser, BaseUser):
         self._track_metric(METRIC_CONNECTED, False)
 
     async def post_login(self, info: TLUser = None, first_login: bool = False) -> None:
-        if self.config["metrics.enabled"] and not self._track_connection_task:
+        if (
+            self.config["metrics.enabled"] or self.config["homeserver.status_endpoint"]
+        ) and not self._track_connection_task:
             self._track_connection_task = asyncio.create_task(self._track_connection())
 
         try:
@@ -366,6 +376,9 @@ class User(DBUser, AbstractUser, BaseUser):
         if self.is_bot != info.bot:
             self.is_bot = info.bot
             changed = True
+        if self.is_premium != info.premium:
+            self.is_premium = info.premium
+            changed = True
         if self.tg_username != info.username:
             self.tg_username = info.username
             changed = True
@@ -411,10 +424,11 @@ class User(DBUser, AbstractUser, BaseUser):
                 pass
             self.tgid = None
         ok = await self.client.log_out()
-        await self.client.session.delete()
+        sess = self.client.session
+        await self.stop()
+        await sess.delete()
         await self.delete()
         self.by_mxid.pop(self.mxid, None)
-        await self.stop()
         self._track_metric(METRIC_LOGGED_IN, False)
         return ok
 
@@ -571,16 +585,19 @@ class User(DBUser, AbstractUser, BaseUser):
                 last_read = await DBMessage.get_one_by_tgid(
                     portal.tgid, tg_space, dialog.dialog.read_inbox_max_id
                 )
-            if last_read:
-                await puppet.intent.mark_read(last_read.mx_room, last_read.mxid)
-            if was_created or not self.config["bridge.tag_only_on_create"]:
-                await self._mute_room(puppet, portal, dialog.dialog.notify_settings.mute_until)
-                await self._tag_room(
-                    puppet, portal, self.config["bridge.pinned_tag"], dialog.pinned
-                )
-                await self._tag_room(
-                    puppet, portal, self.config["bridge.archive_tag"], dialog.archived
-                )
+            try:
+                if last_read:
+                    await puppet.intent.mark_read(last_read.mx_room, last_read.mxid)
+                if was_created or not self.config["bridge.tag_only_on_create"]:
+                    await self._mute_room(puppet, portal, dialog.dialog.notify_settings.mute_until)
+                    await self._tag_room(
+                        puppet, portal, self.config["bridge.pinned_tag"], dialog.pinned
+                    )
+                    await self._tag_room(
+                        puppet, portal, self.config["bridge.archive_tag"], dialog.archived
+                    )
+            except Exception:
+                self.log.exception(f"Error updating read status and tags for {portal.tgid_log}")
 
     async def get_cached_portals(self) -> dict[tuple[TelegramID, TelegramID], po.Portal]:
         if self._portals_cache is None:
@@ -683,6 +700,7 @@ class User(DBUser, AbstractUser, BaseUser):
             await puppet.update_info(self, user)
             contacts[user.id] = puppet.contact_info
         await self.set_contacts(contacts.keys())
+        self.log.debug("Contact syncing complete")
         return contacts
 
     # endregion
@@ -713,7 +731,7 @@ class User(DBUser, AbstractUser, BaseUser):
     @classmethod
     @async_getter_lock
     async def get_by_mxid(
-        cls, mxid: UserID, *, check_db: bool = True, create: bool = True
+        cls, mxid: UserID, /, *, check_db: bool = True, create: bool = True
     ) -> User | None:
         if not mxid or pu.Puppet.get_id_from_mxid(mxid) or mxid == cls.az.bot_mxid:
             return None
@@ -741,7 +759,7 @@ class User(DBUser, AbstractUser, BaseUser):
 
     @classmethod
     @async_getter_lock
-    async def get_by_tgid(cls, tgid: TelegramID) -> User | None:
+    async def get_by_tgid(cls, tgid: TelegramID, /) -> User | None:
         try:
             return cls.by_tgid[tgid]
         except KeyError:

@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Iterable
 import asyncio
 import datetime
 
@@ -124,16 +124,40 @@ class PgSession(MemorySession):
         return updates.State(row["pts"], row["qts"], date, row["seq"], row["unread_count"])
 
     async def set_update_state(self, entity_id: int, row: updates.State) -> None:
-        q = (
-            "INSERT INTO telethon_update_state"
-            "    (session_id, entity_id, pts, qts, date, seq, unread_count) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7)"
-            "ON CONFLICT (session_id, entity_id) DO UPDATE"
-            "    SET pts=$3, qts=$4, date=$5, seq=$6, unread_count=$7"
-        )
+        q = """
+        INSERT INTO telethon_update_state(session_id, entity_id, pts, qts, date, seq, unread_count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (session_id, entity_id) DO UPDATE SET
+            pts=excluded.pts, qts=excluded.qts, date=excluded.date, seq=excluded.seq,
+            unread_count=excluded.unread_count
+        """
         ts = row.date.timestamp()
         await self.db.execute(
             q, self.session_id, entity_id, row.pts, row.qts, ts, row.seq, row.unread_count
+        )
+
+    async def delete_update_state(self, entity_id: int) -> None:
+        q = "DELETE FROM telethon_update_state WHERE session_id=$1 AND entity_id=$2"
+        await self.db.execute(q, self.session_id, entity_id)
+
+    async def get_update_states(self) -> Iterable[tuple[int, updates.State], ...]:
+        q = (
+            "SELECT entity_id, pts, qts, date, seq, unread_count FROM telethon_update_state "
+            "WHERE session_id=$1"
+        )
+        rows = await self.db.fetch(q, self.session_id)
+        return (
+            (
+                row["entity_id"],
+                updates.State(
+                    row["pts"],
+                    row["qts"],
+                    datetime.datetime.utcfromtimestamp(row["date"]),
+                    row["seq"],
+                    row["unread_count"],
+                ),
+            )
+            for row in rows
         )
 
     def _entity_values_to_row(
@@ -176,25 +200,24 @@ class PgSession(MemorySession):
     async def _select_entity(
         self, constraint: str, *args: str | int | tuple[int, ...]
     ) -> tuple[int, int] | None:
-        row = await self.db.fetchrow(
-            f"SELECT id, hash FROM telethon_entities WHERE {constraint}", *args
-        )
+        q = f"SELECT id, hash FROM telethon_entities WHERE session_id=$1 AND {constraint}"
+        row = await self.db.fetchrow(q, self.session_id, *args)
         if row is None:
             return None
         return row["id"], row["hash"]
 
     async def get_entity_rows_by_phone(self, key: str | int) -> tuple[int, int] | None:
-        return await self._select_entity("phone=$1", str(key))
+        return await self._select_entity("phone=$2", str(key))
 
     async def get_entity_rows_by_username(self, key: str) -> tuple[int, int] | None:
-        return await self._select_entity("username=$1", key)
+        return await self._select_entity("username=$2", key)
 
     async def get_entity_rows_by_name(self, key: str) -> tuple[int, int] | None:
-        return await self._select_entity("name=$1", key)
+        return await self._select_entity("name=$2", key)
 
     async def get_entity_rows_by_id(self, key: int, exact: bool = True) -> tuple[int, int] | None:
         if exact:
-            return await self._select_entity("id=$1", key)
+            return await self._select_entity("id=$2", key)
 
         ids = (
             utils.get_peer_id(PeerUser(key)),
@@ -202,6 +225,6 @@ class PgSession(MemorySession):
             utils.get_peer_id(PeerChannel(key)),
         )
         if self.db.scheme in (Scheme.POSTGRES, Scheme.COCKROACH):
-            return await self._select_entity("id=ANY($1)", ids)
+            return await self._select_entity("id=ANY($2)", ids)
         else:
-            return await self._select_entity(f"id IN ($1, $2, $3)", *ids)
+            return await self._select_entity(f"id IN ($2, $3, $4)", *ids)

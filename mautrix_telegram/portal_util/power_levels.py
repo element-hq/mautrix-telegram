@@ -80,16 +80,16 @@ def get_base_power_levels(
         levels.events_default = overrides.get(
             "events_default",
             50
-            if (
-                portal.peer_type == "channel"
-                and not entity.megagroup
-                or entity.default_banned_rights.send_messages
-            )
+            if portal.peer_type == "channel" and not entity.megagroup or dbr.send_messages
             else 0,
         )
     for evt_type, value in overrides.get("events", {}).items():
         levels.events[EventType.find(evt_type)] = value
-    levels.users = overrides.get("users", {})
+    userlevel_overrides = overrides.get("users", {})
+    bot_level = levels.get_user_level(portal.main_intent.mxid)
+    for user, user_level in levels.users.items():
+        if user_level < bot_level:
+            levels.users[user] = userlevel_overrides.get(user, 0)
     if portal.main_intent.mxid not in levels.users:
         levels.users[portal.main_intent.mxid] = 100
     return levels

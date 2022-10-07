@@ -36,12 +36,6 @@ Permissions = NamedTuple(
 
 
 class Config(BaseBridgeConfig):
-    def __getitem__(self, key: str) -> Any:
-        try:
-            return os.environ[f"MAUTRIX_TELEGRAM_{key.replace('.', '_').upper()}"]
-        except KeyError:
-            return super().__getitem__(key)
-
     @property
     def forbidden_defaults(self) -> List[ForbiddenDefault]:
         return [
@@ -63,8 +57,6 @@ class Config(BaseBridgeConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         super().do_update(helper)
         copy, copy_dict, base = helper
-
-        copy("homeserver.asmux")
 
         if "appservice.protocol" in self and "appservice.address" not in self:
             protocol, hostname, port = (
@@ -125,6 +117,7 @@ class Config(BaseBridgeConfig):
         copy("bridge.allow_avatar_remove")
 
         copy("bridge.max_initial_member_sync")
+        copy("bridge.max_member_count")
         copy("bridge.sync_channel_members")
         copy("bridge.skip_deleted_members")
         copy("bridge.startup_sync")
@@ -138,12 +131,12 @@ class Config(BaseBridgeConfig):
         copy("bridge.max_telegram_delete")
         copy("bridge.sync_matrix_state")
         copy("bridge.allow_matrix_login")
-        copy("bridge.plaintext_highlights")
         copy("bridge.public_portals")
         copy("bridge.sync_with_custom_puppets")
         copy("bridge.sync_direct_chat_list")
         copy("bridge.double_puppet_server_map")
         copy("bridge.double_puppet_allow_discovery")
+        copy("bridge.create_group_on_invite")
         if "bridge.login_shared_secret" in self:
             base["bridge.login_shared_secret_map"] = {
                 base["homeserver.domain"]: self["bridge.login_shared_secret"]
@@ -152,24 +145,24 @@ class Config(BaseBridgeConfig):
             copy("bridge.login_shared_secret_map")
         copy("bridge.telegram_link_preview")
         copy("bridge.invite_link_resolve")
-        copy("bridge.inline_images")
+        copy("bridge.caption_in_message")
         copy("bridge.image_as_file_size")
         copy("bridge.image_as_file_pixels")
         copy("bridge.parallel_file_transfer")
         copy("bridge.federate_rooms")
         copy("bridge.animated_sticker.target")
+        copy("bridge.animated_sticker.convert_from_webm")
         copy("bridge.animated_sticker.args.width")
         copy("bridge.animated_sticker.args.height")
         copy("bridge.animated_sticker.args.fps")
-        copy("bridge.encryption.allow")
-        copy("bridge.encryption.default")
-        copy("bridge.encryption.database")
-        copy("bridge.encryption.key_sharing.allow")
-        copy("bridge.encryption.key_sharing.require_cross_signing")
-        copy("bridge.encryption.key_sharing.require_verification")
+        copy("bridge.animated_emoji.target")
+        copy("bridge.animated_emoji.args.width")
+        copy("bridge.animated_emoji.args.height")
+        copy("bridge.animated_emoji.args.fps")
         copy("bridge.private_chat_portal_meta")
         copy("bridge.delivery_receipts")
         copy("bridge.delivery_error_reports")
+        copy("bridge.message_status_events")
         copy("bridge.resend_bridge_info")
         copy("bridge.mute_bridging")
         copy("bridge.pinned_tag")
@@ -250,6 +243,10 @@ class Config(BaseBridgeConfig):
         copy("telegram.api_id")
         copy("telegram.api_hash")
         copy("telegram.bot_token")
+
+        copy("telegram.catch_up")
+        copy("telegram.sequential_updates")
+        copy("telegram.exit_on_update_error")
 
         copy("telegram.connection.timeout")
         copy("telegram.connection.retries")
