@@ -1,6 +1,6 @@
 # Generated in setup.py
 
 git_tag = None
-git_revision = "eeac30a1"
-version = "0.11.0+dev.eeac30a1"
-linkified_version = "0.11.0+dev.[eeac30a1](https://github.com/mautrix/telegram/commit/eeac30a173b2c63aca19172ece983cfbb3d05812)"
+git_revision = 'f43f43f9'
+version = '0.12.1+dev.f43f43f9'
+linkified_version = '0.12.1+dev.[f43f43f9](https://github.com/mautrix/telegram/commit/f43f43f975c595a50086cc24bdcb0d0f23587641)'
