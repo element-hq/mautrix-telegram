@@ -22,6 +22,7 @@ import logging
 import platform
 import time
 
+from telethon.errors import UnauthorizedError
 from telethon.network import (
     Connection,
     ConnectionTcpFull,
@@ -38,6 +39,7 @@ from telethon.tl.types import (
     PeerChat,
     PeerUser,
     TypeUpdate,
+    UpdateChannel,
     UpdateChannelUserTyping,
     UpdateChatParticipantAdmin,
     UpdateChatParticipants,
@@ -57,6 +59,7 @@ from telethon.tl.types import (
     UpdateReadChannelInbox,
     UpdateReadHistoryInbox,
     UpdateReadHistoryOutbox,
+    UpdateShort,
     UpdateShortChatMessage,
     UpdateShortMessage,
     UpdateUserName,
@@ -223,10 +226,26 @@ class AbstractUser(ABC):
             connection=connection,
             proxy=proxy,
             raise_last_call_error=True,
+            catch_up=self.config["telegram.catch_up"],
+            sequential_updates=self.config["telegram.sequential_updates"],
             loop=self.loop,
             base_logger=base_logger,
+            update_error_callback=self._telethon_update_error_callback,
         )
         self.client.add_event_handler(self._update_catch)
+
+    async def _telethon_update_error_callback(self, err: Exception) -> None:
+        if self.config["telegram.exit_on_update_error"]:
+            self.log.critical(f"Stopping due to update handling error {type(err).__name__}")
+            self.bridge.manual_stop(50)
+        else:
+            if isinstance(err, UnauthorizedError):
+                self.log.warning("Not recreating Telethon update loop")
+                return
+            self.log.info("Recreating Telethon update loop in 60 seconds")
+            await asyncio.sleep(60)
+            self.log.debug("Now recreating Telethon update loop")
+            self.client._updates_handle = self.loop.create_task(self.client._update_loop())
 
     @abstractmethod
     async def update(self, update: TypeUpdate) -> bool:
@@ -283,21 +302,24 @@ class AbstractUser(ABC):
     async def ensure_started(self, even_if_no_session=False) -> AbstractUser:
         if self.connected:
             return self
-        if even_if_no_session or await PgSession.has(self.mxid):
+        session_exists = await PgSession.has(self.mxid)
+        if even_if_no_session or session_exists:
             self.log.debug(
-                "Starting client due to ensure_started"
-                f"(even_if_no_session={even_if_no_session})"
+                f"Starting client due to ensure_started({even_if_no_session=}, {session_exists=})"
             )
             await self.start(delete_unless_authenticated=not even_if_no_session)
         return self
 
     async def stop(self) -> None:
-        await self.client.disconnect()
-        self.client = None
+        if self.client:
+            await self.client.disconnect()
+            self.client = None
 
     # region Telegram update handling
 
     async def _update(self, update: TypeUpdate) -> None:
+        if isinstance(update, UpdateShort):
+            update = update.update
         asyncio.create_task(self._handle_entity_updates(getattr(update, "_entities", {})))
         if isinstance(
             update,
@@ -339,6 +361,8 @@ class AbstractUser(ABC):
             await self.update_pinned_dialogs(update)
         elif isinstance(update, UpdateNotifySettings):
             await self.update_notify_settings(update)
+        elif isinstance(update, UpdateChannel):
+            await self.update_channel(update)
         else:
             self.log.trace("Unhandled update: %s", update)
 
@@ -570,6 +594,36 @@ class AbstractUser(ABC):
         if not portal or not portal.mxid or not portal.allow_bridging:
             return
         await portal.handle_telegram_reactions(self, TelegramID(update.msg_id), update.reactions)
+
+    async def update_channel(self, update: UpdateChannel) -> None:
+        portal = await po.Portal.get_by_tgid(TelegramID(update.channel_id))
+        if not portal:
+            return
+        if getattr(update, "mau_telethon_is_leave", False):
+            self.log.debug("UpdateChannel has mau_telethon_is_leave, leaving portal")
+            await portal.delete_telegram_user(self.tgid, sender=None)
+        elif chan := getattr(update, "mau_channel", None):
+            if not portal.mxid:
+                asyncio.create_task(self._delayed_create_channel(chan))
+            else:
+                self.log.debug("Updating channel info with data fetched by Telethon")
+                await portal.update_info(self, chan)
+                await portal.invite_to_matrix(self.mxid)
+
+    async def _delayed_create_channel(self, chan: Channel) -> None:
+        self.log.debug("Waiting 5 seconds before handling UpdateChannel for non-existent portal")
+        await asyncio.sleep(5)
+        portal = await po.Portal.get_by_tgid(TelegramID(chan.id))
+        if portal.mxid:
+            self.log.debug(
+                "Portal started existing after waiting 5 seconds, dropping UpdateChannel"
+            )
+            return
+        else:
+            self.log.info(
+                "Creating Matrix room with data fetched by Telethon due to UpdateChannel"
+            )
+            await portal.create_matrix_room(self, chan)
 
     async def update_message(self, original_update: UpdateMessage) -> None:
         update, sender, portal = await self.get_message_details(original_update)

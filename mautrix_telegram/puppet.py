@@ -80,6 +80,7 @@ class Puppet(DBPuppet, BasePuppet):
         avatar_set: bool = False,
         is_bot: bool = False,
         is_channel: bool = False,
+        is_premium: bool = False,
         custom_mxid: UserID | None = None,
         access_token: str | None = None,
         next_batch: SyncToken | None = None,
@@ -101,6 +102,7 @@ class Puppet(DBPuppet, BasePuppet):
             avatar_set=avatar_set,
             is_bot=is_bot,
             is_channel=is_channel,
+            is_premium=is_premium,
             custom_mxid=custom_mxid,
             access_token=access_token,
             next_batch=next_batch,
@@ -255,11 +257,15 @@ class Puppet(DBPuppet, BasePuppet):
 
     async def update_info(self, source: au.AbstractUser, info: User | Channel) -> None:
         is_bot = False if isinstance(info, Channel) else info.bot
+        is_premium = False if isinstance(info, Channel) else info.premium
         is_channel = isinstance(info, Channel)
-        changed = is_bot != self.is_bot or is_channel != self.is_channel
+        changed = (
+            is_bot != self.is_bot or is_channel != self.is_channel or is_premium != self.is_premium
+        )
 
         self.is_bot = is_bot
         self.is_channel = is_channel
+        self.is_premium = is_premium
 
         if self.username != info.username:
             self.username = info.username
@@ -406,7 +412,7 @@ class Puppet(DBPuppet, BasePuppet):
     @classmethod
     @async_getter_lock
     async def get_by_tgid(
-        cls, tgid: TelegramID, *, create: bool = True, is_channel: bool = False
+        cls, tgid: TelegramID, /, *, create: bool = True, is_channel: bool = False
     ) -> Puppet | None:
         if tgid is None:
             return None
@@ -459,7 +465,7 @@ class Puppet(DBPuppet, BasePuppet):
 
     @classmethod
     @async_getter_lock
-    async def get_by_custom_mxid(cls, mxid: UserID) -> Puppet | None:
+    async def get_by_custom_mxid(cls, mxid: UserID, /) -> Puppet | None:
         try:
             return cls.by_custom_mxid[mxid]
         except KeyError:
@@ -503,25 +509,6 @@ class Puppet(DBPuppet, BasePuppet):
                 return puppet
 
         puppet = cast(cls, await super().find_by_username(username))
-        if puppet:
-            try:
-                return cls.by_tgid[puppet.tgid]
-            except KeyError:
-                puppet._add_to_cache()
-                return puppet
-
-        return None
-
-    @classmethod
-    async def find_by_displayname(cls, displayname: str) -> Puppet | None:
-        if not displayname:
-            return None
-
-        for _, puppet in cls.by_tgid.items():
-            if puppet.displayname and puppet.displayname == displayname:
-                return puppet
-
-        puppet = cast(cls, await super().find_by_displayname(displayname))
         if puppet:
             try:
                 return cls.by_tgid[puppet.tgid]

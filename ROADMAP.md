@@ -24,6 +24,7 @@
 * Telegram → Matrix
   * [x] Message content (text, formatting, files, etc..)
   * [ ] Advanced message content/media
+    * [x] Custom emojis
     * [x] Polls
 	* [x] Games
 	* [ ] Buttons
@@ -54,7 +55,7 @@
   * [x] Automatic portal creation
     * [x] At startup
     * [x] When receiving invite or message
-  * [x] Private chat creation by inviting Matrix puppet of Telegram user to new room
+  * [x] Portal creation by inviting Matrix puppet of Telegram user to new room
   * [x] Option to use bot to relay messages for unauthenticated Matrix users (relaybot)
   * [x] Option to use own Matrix account for messages sent from other Telegram clients (double puppeting)
   * [ ] ‡ Calls (hard, not yet supported by Telethon)

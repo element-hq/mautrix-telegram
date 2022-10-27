@@ -66,6 +66,7 @@ from ...types import TelegramID
 
 @command_handler(
     needs_auth=False,
+    needs_puppeting=False,
     help_section=SECTION_MISC,
     help_args="<_caption_>",
     help_text="Set a caption for the next image you send",
@@ -233,7 +234,10 @@ async def join(evt: CommandEvent) -> EventID | None:
                     updates.stringify(),
                 )
                 raise e
-            return await evt.reply(f"Created room for {portal.title}")
+            if portal.mxid:
+                return await evt.reply(f"Created room for {portal.title}")
+            else:
+                return await evt.reply(f"Couldn't create room for {portal.title}")
     return None
 
 

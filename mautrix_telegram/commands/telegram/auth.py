@@ -38,6 +38,7 @@ from telethon.errors import (
 from telethon.tl.types import User
 
 from mautrix.client import Client
+from mautrix.errors import MForbidden
 from mautrix.types import (
     EventID,
     ImageInfo,
@@ -215,6 +216,10 @@ async def login_qr(evt: CommandEvent) -> EventID:
             return await evt.reply(
                 "Your account has two-factor authentication. Please send your password here."
             )
+        try:
+            await evt.main_intent.redact(evt.room_id, qr_event_id, reason="QR code scanned")
+        except Exception:
+            pass
     else:
         timeout = TextMessageEventContent(body="Login timed out", msgtype=MessageType.TEXT)
         timeout.set_edit(qr_event_id)
@@ -377,6 +382,7 @@ async def enter_password(evt: CommandEvent) -> EventID | None:
             "This bridge instance does not allow in-Matrix login. "
             "Please use `$cmdprefix+sp login` to get login instructions"
         )
+    await evt.redact()
     try:
         await _sign_in(
             evt,
