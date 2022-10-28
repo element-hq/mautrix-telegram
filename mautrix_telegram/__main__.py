@@ -121,8 +121,6 @@ class TelegramBridge(Bridge):
         # Note: In upstream this would start all the puppets, but in our fork we want to gracefully start the user puppets
         self.add_startup_actions(User.init_cls(self))
         self.add_startup_actions(Portal.restart_scheduled_disappearing())
-        if self.bot:
-            self.add_startup_actions(self.bot.start())
         if self.config["bridge.resend_bridge_info"]:
             self.add_startup_actions(self.resend_bridge_info())
 
@@ -156,8 +154,11 @@ class TelegramBridge(Bridge):
             try:
                 await self.bot.start()
                 METRIC_BOT_STARTUP_OK.set(1)
-            except telethon.errors.RPCError as e:
-                self.log.error(f"Failed to start bot: {e}")
+            except Exception as e:
+                if isinstance(e, telethon.errors.RPCError):
+                    self.log.error(f"Failed to start bot (telethon error): {e}")
+                else:
+                    self.log.exception(f"Failed to start bot (internal error)")
                 METRIC_BOT_STARTUP_OK.set(0)
 
         # Explicitly not a startup_action, as startup_actions block startup
