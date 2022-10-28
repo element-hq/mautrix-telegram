@@ -19,7 +19,7 @@ imageio-ffmpeg==0.4.7
 Mako==1.2.3
 MarkupSafe==2.1.1
 #mautrix==0.18.2
-git+https://github.com/jaywink/mautrix-python.git@71ffd9a64f205dfffeb9850bd28698535a796651
+mautrix @ git+https://github.com/jaywink/mautrix-python.git@71ffd9a64f205dfffeb9850bd28698535a796651#egg=mautrix
 moviepy==1.0.3
 multidict==6.0.2
 numpy==1.23.3
