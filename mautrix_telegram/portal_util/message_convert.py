@@ -530,7 +530,7 @@ class TelegramMessageConverter:
     async def _convert_unsupported(source: au.AbstractUser, evt: Message, **_) -> ConvertedMessage:
         override_text = (
             "This message is not supported on your version of Mautrix-Telegram. "
-            "Please check https://github.com/mautrix/telegram or ask your "
+            "Please check https://github.com/vector-im/mautrix-telegram or ask your "
             "bridge administrator about possible updates."
         )
         content = await formatter.telegram_to_matrix(evt, source, override_text=override_text)
