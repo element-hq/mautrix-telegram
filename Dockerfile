@@ -46,7 +46,8 @@ RUN apk add --no-cache \
       bash \
       curl \
       jq \
-      yq
+      yq \
+      git
 
 
 COPY requirements.txt /opt/mautrix-telegram/requirements.txt
