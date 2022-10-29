@@ -20,4 +20,4 @@ from . import upgrade_table
 
 @upgrade_table.register(description="Add index to message mx_room and sender columns")
 async def upgrade_v15(conn: Connection) -> None:
-    await conn.execute("CREATE INDEX message_mx_room_and_sender_idx ON message(mx_room, sender)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS message_mx_room_and_sender_idx ON message(mx_room, sender)")
