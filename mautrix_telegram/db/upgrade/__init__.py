@@ -17,4 +17,5 @@ from . import (
     v12_message_sender,
     v13_multiple_reactions,
     v14_puppet_custom_mxid_index,
+    v15_message_mx_room_and_sender_index,
 )
