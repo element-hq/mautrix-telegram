@@ -18,8 +18,8 @@ from mautrix.util.async_db import Connection
 from . import upgrade_table
 
 
-@upgrade_table.register(description="Add index to message mx_room and sender columns")
+@upgrade_table.register(description="Add index for Message.find_recent")
 async def upgrade_v15(conn: Connection) -> None:
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS message_mx_room_and_sender_idx ON message(mx_room, sender)"
+        "CREATE INDEX IF NOT EXISTS message_find_recent ON message(mx_room, sender, tgid DESC)"
     )
