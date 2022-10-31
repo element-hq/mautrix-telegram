@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from mautrix.util.async_db import Connection, Scheme
 
-latest_version = 13
+latest_version = 15
 
 
 async def create_latest_tables(conn: Connection, scheme: Scheme) -> int:
@@ -73,6 +73,7 @@ async def create_latest_tables(conn: Connection, scheme: Scheme) -> int:
             UNIQUE (mxid, mx_room, tg_space)
         )"""
     )
+    await conn.execute("CREATE INDEX message_mx_room_and_tgid_idx ON message(mx_room, tgid DESC)")
     await conn.execute(
         """CREATE TABLE reaction (
             mxid      TEXT NOT NULL,
@@ -123,6 +124,7 @@ async def create_latest_tables(conn: Connection, scheme: Scheme) -> int:
         )"""
     )
     await conn.execute("CREATE INDEX puppet_username_idx ON puppet(LOWER(username))")
+    await conn.execute("CREATE INDEX puppet_custom_mxid_idx ON puppet(custom_mxid)")
     await conn.execute(
         """CREATE TABLE telegram_file (
             id              TEXT PRIMARY KEY,
