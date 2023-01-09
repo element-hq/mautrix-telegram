@@ -1,3 +1,45 @@
+# unreleased
+
+### Added
+* Added `allow_contact_info` config option to specify whether personal names
+  and avatars for other users should be bridged.
+  * The option is only safe to enable on single-user instances, using it
+    anywhere else will cause ghost user profiles to flip back and forth between
+    personal and default ones.
+
+### Improved
+* Updated Docker image to Alpine 3.17.
+* Updated to Telegram API layer 151.
+
+### Fixed
+* Fixed handling Telegram chat upgrades when backfilling is enabled.
+* Fixed file transfers failing if transfering the thumbnail fails.
+* Fixed bridging unnamed files with unrecognized mime types.
+
+# v0.12.2 (2022-11-26)
+
+### Added
+* Added built-in custom emoji packs to allow reacting with any standard unicode
+  emoji from Matrix (note that only premium users can use custom emojis).
+* Added infinite backfill using [MSC2716].
+  * The new system includes a backwards compatibility mechanism which uses the
+    old method of just sending events to the room. By default, MSC2716 is not
+    enabled and the legacy method will be used.
+
+### Improved
+* Redacting reactions on Matrix no longer removes the user's other reactions to
+  the same message (premium users can have up to 3 reactions per message).
+* Changes to default user permissions on Telegram are now bridged.
+* Added database index to make reaction polling more efficient
+  (thanks to [@AndrewFerr] in [#862]).
+
+### Fixed
+* Fixed provisioning API not working with URL-encoded parameters.
+
+[MSC2716]: https://github.com/matrix-org/matrix-spec-proposals/pull/2716
+[@AndrewFerr]: https://github.com/AndrewFerr
+[#862]: https://github.com/mautrix/telegram/pull/862
+
 # v0.12.1 (2022-09-26)
 
 ### Added

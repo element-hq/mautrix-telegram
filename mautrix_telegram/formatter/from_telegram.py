@@ -23,6 +23,9 @@ from telethon.errors import RPCError
 from telethon.helpers import add_surrogate, del_surrogate
 from telethon.tl.custom import Message
 from telethon.tl.types import (
+    Channel,
+    InputPeerChannelFromMessage,
+    InputPeerUserFromMessage,
     MessageEntityBlockquote,
     MessageEntityBold,
     MessageEntityBotCommand,
@@ -47,21 +50,47 @@ from telethon.tl.types import (
     PeerUser,
     SponsoredMessage,
     TypeMessageEntity,
+    User,
 )
 
 from mautrix.types import Format, MessageType, TextMessageEventContent
 
 from .. import abstract_user as au, portal as po, puppet as pu, user as u
 from ..db import Message as DBMessage, TelegramFile as DBTelegramFile
+from ..tgclient import MautrixTelegramClient
 from ..types import TelegramID
-from ..util.file_transfer import transfer_custom_emojis_to_matrix
+from ..util.file_transfer import UnicodeCustomEmoji, transfer_custom_emojis_to_matrix
 
 log: logging.Logger = logging.getLogger("mau.fmt.tg")
 
 
+async def _get_fwd_entity(client: MautrixTelegramClient, evt: Message) -> Channel | User | None:
+    try:
+        return await client.get_entity(evt.fwd_from.from_id)
+    except (ValueError, RPCError) as e:
+        try:
+            input_peer = await client.get_input_entity(evt.peer_id)
+            if isinstance(evt.fwd_from.from_id, PeerUser):
+                return await client.get_entity(
+                    InputPeerUserFromMessage(
+                        peer=input_peer, msg_id=evt.id, user_id=evt.fwd_from.from_id.user_id
+                    )
+                )
+            elif isinstance(evt.fwd_from.from_id, PeerChannel):
+                return await client.get_entity(
+                    InputPeerChannelFromMessage(
+                        peer=input_peer, msg_id=evt.id, channel_id=evt.fwd_from.from_id.channel_id
+                    )
+                )
+        except (ValueError, RPCError) as e:
+            pass
+        return None
+
+
 async def _add_forward_header(
-    source: au.AbstractUser, content: TextMessageEventContent, fwd_from: MessageFwdHeader
+    client: MautrixTelegramClient, content: TextMessageEventContent, evt: Message
 ) -> None:
+    fwd_from = evt.fwd_from
     fwd_from_html, fwd_from_text = None, None
     if isinstance(fwd_from.from_id, PeerUser):
         user = await u.User.get_by_tgid(TelegramID(fwd_from.from_id.user_id))
@@ -80,12 +109,11 @@ async def _add_forward_header(
                 )
 
         if not fwd_from_text:
-            try:
-                user = await source.client.get_entity(fwd_from.from_id)
-                if user:
-                    fwd_from_text, _ = pu.Puppet.get_displayname(user, False)
-                    fwd_from_html = f"<b>{escape(fwd_from_text)}</b>"
-            except (ValueError, RPCError):
+            user = await _get_fwd_entity(client, evt)
+            if user:
+                fwd_from_text, _ = pu.Puppet.get_displayname(user, False)
+                fwd_from_html = f"<b>{escape(fwd_from_text)}</b>"
+            else:
                 fwd_from_text = fwd_from_html = "unknown user"
     elif isinstance(fwd_from.from_id, (PeerChannel, PeerChat)):
         from_id = (
@@ -103,12 +131,11 @@ async def _add_forward_header(
             else:
                 fwd_from_html = f"channel <b>{escape(fwd_from_text)}</b>"
         else:
-            try:
-                channel = await source.client.get_entity(fwd_from.from_id)
-                if channel:
-                    fwd_from_text = f"channel {channel.title}"
-                    fwd_from_html = f"channel <b>{escape(channel.title)}</b>"
-            except (ValueError, RPCError):
+            channel = await _get_fwd_entity(client, evt)
+            if channel:
+                fwd_from_text = f"channel {channel.title}"
+                fwd_from_html = f"channel <b>{escape(channel.title)}</b>"
+            else:
                 fwd_from_text = fwd_from_html = "unknown channel"
     elif fwd_from.from_name:
         fwd_from_text = fwd_from.from_name
@@ -135,12 +162,14 @@ class ReuploadedCustomEmoji(MessageEntityCustomEmoji):
 
 
 async def _convert_custom_emoji(
-    source: au.AbstractUser, entities: list[TypeMessageEntity]
+    source: au.AbstractUser,
+    entities: list[TypeMessageEntity],
+    client: MautrixTelegramClient | None = None,
 ) -> None:
     emoji_ids = [
         entity.document_id for entity in entities if isinstance(entity, MessageEntityCustomEmoji)
     ]
-    custom_emojis = await transfer_custom_emojis_to_matrix(source, emoji_ids)
+    custom_emojis = await transfer_custom_emojis_to_matrix(source, emoji_ids, client=client)
     if len(custom_emojis) > 0:
         for i, entity in enumerate(entities):
             if isinstance(entity, MessageEntityCustomEmoji):
@@ -150,17 +179,20 @@ async def _convert_custom_emoji(
 async def telegram_to_matrix(
     evt: Message | SponsoredMessage,
     source: au.AbstractUser,
+    client: MautrixTelegramClient | None = None,
     override_text: str = None,
     override_entities: list[TypeMessageEntity] = None,
     require_html: bool = False,
 ) -> TextMessageEventContent:
+    if not client:
+        client = source.client
     content = TextMessageEventContent(
         msgtype=MessageType.TEXT,
         body=override_text or evt.message,
     )
     entities = override_entities or evt.entities
     if entities:
-        await _convert_custom_emoji(source, entities)
+        await _convert_custom_emoji(source, entities, client=client)
         content.format = Format.HTML
         html = await _telegram_entities_to_matrix_catch(add_surrogate(content.body), entities)
         content.formatted_body = del_surrogate(html)
@@ -169,7 +201,7 @@ async def telegram_to_matrix(
         content.ensure_has_html()
 
     if getattr(evt, "fwd_from", None):
-        await _add_forward_header(source, content, evt.fwd_from)
+        await _add_forward_header(client, content, evt)
 
     if isinstance(evt, Message) and evt.post and evt.post_author:
         content.ensure_has_html()
@@ -279,10 +311,14 @@ async def _telegram_entities_to_matrix(
         elif entity_type == MessageEntityCustomEmoji:
             html.append(entity_text)
         elif entity_type == ReuploadedCustomEmoji:
-            html.append(
-                f'<img data-mx-emoticon data-mau-animated-emoji src="{escape(entity.file.mxc)}" '
-                f'height="32" width="32" alt="{entity_text}" title="{entity_text}"/>'
-            )
+            if isinstance(entity.file, UnicodeCustomEmoji):
+                html.append(entity.file.emoji)
+            else:
+                html.append(
+                    f"<img data-mx-emoticon data-mau-animated-emoji"
+                    f' src="{escape(entity.file.mxc)}" height="32" width="32"'
+                    f' alt="{entity_text}" title="{entity_text}"/>'
+                )
         elif entity_type in (
             MessageEntityBotCommand,
             MessageEntityHashtag,

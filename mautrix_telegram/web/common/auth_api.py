@@ -128,7 +128,7 @@ class AuthAPI(abc.ABC):
                 status=200,
                 message=(
                     "Code requested successfully. Check your SMS "
-                    "or Telegram client and enter the code below."
+                    "or Telegram app and enter the code below."
                 ),
             )
         except PhoneNumberInvalidError:
@@ -341,8 +341,16 @@ class AuthAPI(abc.ABC):
                 errcode="password_invalid",
                 error="Incorrect password.",
             )
-        except Exception:
+        except Exception as e:
             self.log.exception("Error sending password")
+            if isinstance(e, ValueError) and "You must provide a phone and a code" in str(e):
+                return self.get_login_response(
+                    mxid=user.mxid,
+                    state="request",
+                    status=400,
+                    errcode="phone_code_not_entered",
+                    error="Please request a new phone code and enter it first.",
+                )
             return self.get_login_response(
                 mxid=user.mxid,
                 state="password",

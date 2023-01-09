@@ -2,7 +2,8 @@
 # Uncommented lines after the group definition insert things into that group.
 
 #/speedups
-cryptg>=0.1,<0.4
+cryptg>=0.1,<0.5
+aiodns
 brotli
 
 #/qr_login
@@ -16,9 +17,12 @@ moviepy>=1,<2
 phonenumbers>=8,<9
 
 #/metrics
-prometheus_client>=0.6,<0.15
+prometheus_client>=0.6,<0.16
 
 #/e2be
 python-olm>=3,<4
 pycryptodome>=3,<4
 unpaddedbase64>=1,<3
+
+#/sqlite
+aiosqlite>=0.16,<0.19

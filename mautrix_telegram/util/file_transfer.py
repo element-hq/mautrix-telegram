@@ -15,11 +15,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import NamedTuple, Optional, Union
 from io import BytesIO
 from sqlite3 import IntegrityError
 import asyncio
 import logging
+import pickle
+import pkgutil
 import tempfile
 import time
 
@@ -44,7 +46,7 @@ from telethon.tl.types import (
 )
 
 from mautrix.appservice import IntentAPI
-from mautrix.util import magic
+from mautrix.util import magic, variation_selector
 
 from .. import abstract_user as au
 from ..db import TelegramFile as DBTelegramFile
@@ -212,20 +214,44 @@ async def transfer_thumbnail_to_matrix(
 
 transfer_locks: dict[str, asyncio.Lock] = {}
 
+unicode_custom_emoji_map = pickle.loads(
+    pkgutil.get_data("mautrix_telegram", "unicodemojipack.pickle")
+)
+reverse_unicode_custom_emoji_map = {
+    doc_id: emoji for emoji, doc_id in unicode_custom_emoji_map.items()
+}
+
 TypeThumbnail = Optional[Union[TypeLocation, TypePhotoSize]]
 
 
+class UnicodeCustomEmoji(NamedTuple):
+    emoji: str
+
+
 async def transfer_custom_emojis_to_matrix(
-    source: au.AbstractUser, emoji_ids: list[int]
-) -> dict[int, DBTelegramFile]:
+    source: au.AbstractUser, emoji_ids: list[int], client: MautrixTelegramClient | None = None
+) -> dict[int, DBTelegramFile | UnicodeCustomEmoji]:
+    if not client:
+        client = source.client
     emoji_ids = set(emoji_ids)
+    existing_unicode = {}
+    for emoji_id in emoji_ids:
+        try:
+            existing_unicode[emoji_id] = UnicodeCustomEmoji(
+                variation_selector.add(reverse_unicode_custom_emoji_map[emoji_id])
+            )
+        except KeyError:
+            pass
+    emoji_ids -= existing_unicode.keys()
+    if not emoji_ids:
+        return existing_unicode
     existing = await DBTelegramFile.get_many([str(id) for id in emoji_ids])
-    file_map = {int(file.id): file for file in existing}
+    file_map = {int(file.id): file for file in existing} | existing_unicode
     not_existing_ids = list(emoji_ids - file_map.keys())
     if not_existing_ids:
         log.debug(f"Transferring custom emojis through {source.mxid}: {not_existing_ids}")
 
-        documents: list[Document] = await source.client(
+        documents: list[Document] = await client(
             GetCustomEmojiDocumentsRequest(document_id=not_existing_ids)
         )
 
@@ -237,7 +263,7 @@ async def transfer_custom_emojis_to_matrix(
         async def transfer(document: Document) -> None:
             async with transfer_sema:
                 file_map[document.id] = await transfer_file_to_matrix(
-                    source.client,
+                    client,
                     source.bridge.az.intent,
                     document,
                     is_sticker=True,
@@ -375,34 +401,37 @@ async def _unlocked_transfer_file_to_matrix(
             width=width,
             height=height,
         )
-    if thumbnail and (mime_type.startswith("video/") or mime_type == "image/gif"):
-        if isinstance(thumbnail, (PhotoSize, PhotoCachedSize)):
-            thumbnail = thumbnail.location
-        try:
+    try:
+        if thumbnail and (mime_type.startswith("video/") or mime_type == "image/gif"):
+            if isinstance(thumbnail, (PhotoSize, PhotoCachedSize)):
+                thumbnail = thumbnail.location
+            try:
+                db_file.thumbnail = await transfer_thumbnail_to_matrix(
+                    client,
+                    intent,
+                    thumbnail,
+                    video=file,
+                    mime_type=mime_type,
+                    encrypt=encrypt,
+                    async_upload=async_upload,
+                )
+            except FileIdInvalidError:
+                log.warning(f"Failed to transfer thumbnail {thumbnail!s}", exc_info=True)
+        elif converted_anim and converted_anim.thumbnail_data:
             db_file.thumbnail = await transfer_thumbnail_to_matrix(
                 client,
                 intent,
-                thumbnail,
-                video=file,
-                mime_type=mime_type,
+                location,
+                video=None,
                 encrypt=encrypt,
+                custom_data=converted_anim.thumbnail_data,
+                mime_type=converted_anim.thumbnail_mime,
+                width=converted_anim.width,
+                height=converted_anim.height,
                 async_upload=async_upload,
             )
-        except FileIdInvalidError:
-            log.warning(f"Failed to transfer thumbnail for {thumbnail!s}", exc_info=True)
-    elif converted_anim and converted_anim.thumbnail_data:
-        db_file.thumbnail = await transfer_thumbnail_to_matrix(
-            client,
-            intent,
-            location,
-            video=None,
-            encrypt=encrypt,
-            custom_data=converted_anim.thumbnail_data,
-            mime_type=converted_anim.thumbnail_mime,
-            width=converted_anim.width,
-            height=converted_anim.height,
-            async_upload=async_upload,
-        )
+    except Exception:
+        log.exception(f"Failed to transfer thumbnail for {loc_id}")
 
     try:
         await db_file.insert()

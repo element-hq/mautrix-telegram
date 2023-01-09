@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterable, Awaitable, cast
 from difflib import SequenceMatcher
 import unicodedata
 
+from telethon import utils
 from telethon.tl.types import (
     Channel,
     ChatPhoto,
@@ -29,8 +30,6 @@ from telethon.tl.types import (
     PeerChat,
     PeerUser,
     TypeChatPhoto,
-    TypeInputPeer,
-    TypeInputUser,
     TypePeer,
     TypeUserProfilePhoto,
     UpdateUserName,
@@ -48,6 +47,7 @@ from mautrix.util.simple_template import SimpleTemplate
 from . import abstract_user as au, portal as p, util
 from .config import Config
 from .db import Puppet as DBPuppet
+from .tgclient import MautrixTelegramClient
 from .types import TelegramID
 
 if TYPE_CHECKING:
@@ -146,9 +146,6 @@ class Puppet(DBPuppet, BasePuppet):
     @property
     def plain_displayname(self) -> str:
         return self.displayname_template.parse(self.displayname) or self.displayname
-
-    def get_input_entity(self, user: au.AbstractUser) -> Awaitable[TypeInputPeer | TypeInputUser]:
-        return user.client.get_input_entity(self.peer)
 
     def intent_for(self, portal: p.Portal) -> IntentAPI:
         if portal.tgid == self.tgid:
@@ -255,7 +252,12 @@ class Puppet(DBPuppet, BasePuppet):
         except Exception:
             source.log.exception(f"Failed to update info of {self.tgid}")
 
-    async def update_info(self, source: au.AbstractUser, info: User | Channel) -> None:
+    async def update_info(
+        self,
+        source: au.AbstractUser,
+        info: User | Channel,
+        client_override: MautrixTelegramClient | None = None,
+    ) -> None:
         is_bot = False if isinstance(info, Channel) else info.bot
         is_premium = False if isinstance(info, Channel) else info.premium
         is_channel = isinstance(info, Channel)
@@ -277,8 +279,16 @@ class Puppet(DBPuppet, BasePuppet):
 
         if not self.disable_updates:
             try:
-                changed = await self.update_displayname(source, info) or changed
-                changed = await self.update_avatar(source, info.photo) or changed
+                changed = (
+                    await self.update_displayname(source, info, client_override=client_override)
+                    or changed
+                )
+                changed = (
+                    await self.update_avatar(
+                        source, info.photo, entity=info, client_override=client_override
+                    )
+                    or changed
+                )
             except Exception:
                 self.log.exception(f"Failed to update info from source {source.tgid}")
 
@@ -293,7 +303,10 @@ class Puppet(DBPuppet, BasePuppet):
             await portal.update_info_from_puppet(self)
 
     async def update_displayname(
-        self, source: au.AbstractUser, info: User | Channel | UpdateUserName
+        self,
+        source: au.AbstractUser,
+        info: User | Channel | UpdateUserName,
+        client_override: MautrixTelegramClient | None = None,
     ) -> bool:
         if self.disable_updates:
             return False
@@ -320,14 +333,16 @@ class Puppet(DBPuppet, BasePuppet):
             return False
 
         if isinstance(info, UpdateUserName):
-            info = await source.client.get_entity(self.peer)
-        if isinstance(info, Channel) or not info.contact:
-            self.displayname_contact = False
-        elif not self.displayname_contact:
-            if not self.displayname:
-                self.displayname_contact = True
-            else:
-                return False
+            info = await (client_override or source.client).get_entity(self.peer)
+        is_contact_name = not isinstance(info, Channel) and info.contact
+        # Reject name change if the contact status is moving in an unwanted direction,
+        # and we already have a name for the ghost.
+        if (
+            is_contact_name != self.displayname_contact
+            and is_contact_name != self.config["bridge.allow_contact_info"]
+            and self.displayname
+        ):
+            return False
 
         displayname, quality = self.get_displayname(info)
         needs_reset = displayname != self.displayname or not self.name_set
@@ -335,12 +350,14 @@ class Puppet(DBPuppet, BasePuppet):
         if needs_reset and is_high_quality:
             allow_because = f"{allow_because} and quality {quality} >= {self.displayname_quality}"
             self.log.debug(
-                f"Updating displayname of {self.id} (src: {source.tgid}, allowed "
-                f"because {allow_because}) from {self.displayname} to {displayname}"
+                f"Updating displayname of {self.id} (src: {source.tgid}, "
+                f"contact: {is_contact_name}, allowed because {allow_because}) "
+                f"from {self.displayname} to {displayname}"
             )
             self.log.trace("Displayname source data: %s", info)
             self.displayname = displayname
             self.displayname_source = source.tgid
+            self.displayname_contact = is_contact_name
             self.displayname_quality = quality
             try:
                 await self.default_mxid_intent.set_displayname(
@@ -357,9 +374,23 @@ class Puppet(DBPuppet, BasePuppet):
         return False
 
     async def update_avatar(
-        self, source: au.AbstractUser, photo: TypeUserProfilePhoto | TypeChatPhoto
+        self,
+        source: au.AbstractUser,
+        photo: TypeUserProfilePhoto | TypeChatPhoto,
+        entity: User | None = None,
+        client_override: MautrixTelegramClient | None = None,
     ) -> bool:
         if self.disable_updates:
+            return False
+        if (
+            isinstance(photo, UserProfilePhoto)
+            and photo.personal
+            and not self.config["bridge.allow_contact_info"]
+        ):
+            self.log.trace(
+                "Dropping user avatar as it's personal "
+                "and contact info is disabled in bridge config"
+            )
             return False
 
         if photo is None or isinstance(photo, (UserProfilePhotoEmpty, ChatPhotoEmpty)):
@@ -376,11 +407,22 @@ class Puppet(DBPuppet, BasePuppet):
                 self.photo_id = ""
                 self.avatar_url = None
             elif self.photo_id != photo_id or not self.avatar_url:
+                client = client_override or source.client
+                try:
+                    peer = await client.get_input_entity(entity or self.peer)
+                except ValueError:
+                    if entity:
+                        peer = utils.get_input_peer(entity, check_hash=False)
+                    else:
+                        self.log.warning(f"Couldn't get input entity to update avatar")
+                        return False
                 file = await util.transfer_file_to_matrix(
-                    client=source.client,
+                    client=client,
                     intent=self.default_mxid_intent,
                     location=InputPeerPhotoFileLocation(
-                        peer=await self.get_input_entity(source), photo_id=photo.photo_id, big=True
+                        peer=peer,
+                        photo_id=photo.photo_id,
+                        big=True,
                     ),
                     async_upload=self.config["homeserver.async_media"],
                 )
@@ -399,7 +441,7 @@ class Puppet(DBPuppet, BasePuppet):
 
     async def default_puppet_should_leave_room(self, room_id: RoomID) -> bool:
         portal: p.Portal = await p.Portal.get_by_mxid(room_id)
-        return portal and not portal.backfill_lock.locked and portal.peer_type != "user"
+        return portal and portal.peer_type != "user"
 
     # endregion
     # region Getters
