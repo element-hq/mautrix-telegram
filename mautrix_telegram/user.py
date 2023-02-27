@@ -59,6 +59,7 @@ from mautrix.bridge import BaseUser, async_getter_lock
 from mautrix.client import Client
 from mautrix.errors import MatrixRequestError, MNotFound
 from mautrix.types import PushActionType, PushRuleKind, PushRuleScope, RoomID, RoomTagInfo, UserID
+from mautrix.util import background_task
 from mautrix.util.bridge_state import BridgeState, BridgeStateEvent
 from mautrix.util.opt_prometheus import Gauge
 
@@ -262,7 +263,7 @@ class User(DBUser, AbstractUser, BaseUser):
         else:
             # Authenticated, run post login
             self.log.debug(f"Ensuring post_login() for {self.name}")
-            asyncio.create_task(self.post_login())
+            background_task.create(self.post_login())
             return self
         # Not authenticated, delete data if necessary
         if delete_unless_authenticated and self.client is not None:
@@ -296,18 +297,18 @@ class User(DBUser, AbstractUser, BaseUser):
                     BridgeStateEvent.BACKFILLING
                     if self._is_backfilling
                     else BridgeStateEvent.CONNECTED,
-                    ttl=3600,
                     info=self._bridge_state_info,
                 )
             else:
                 await self.push_bridge_state(
-                    BridgeStateEvent.TRANSIENT_DISCONNECT, ttl=240, error="tg-not-connected"
+                    BridgeStateEvent.TRANSIENT_DISCONNECT, error="tg-not-connected"
                 )
 
     async def fill_bridge_state(self, state: BridgeState) -> None:
         await super().fill_bridge_state(state)
-        state.remote_id = str(self.tgid)
-        state.remote_name = self.human_tg_id
+        if self.tgid:
+            state.remote_id = str(self.tgid)
+            state.remote_name = self.human_tg_id
 
     async def get_bridge_states(self) -> list[BridgeState]:
         if not self.tgid:

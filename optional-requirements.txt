@@ -10,14 +10,12 @@ brotli
 pillow>=4,<10
 qrcode>=6,<8
 
-#/hq_thumbnails
-moviepy>=1,<2
 
 #/formattednumbers
 phonenumbers>=8,<9
 
 #/metrics
-prometheus_client>=0.6,<0.16
+prometheus_client>=0.6,<0.17
 
 #/e2be
 python-olm>=3,<4

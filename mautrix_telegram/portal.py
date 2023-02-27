@@ -171,7 +171,7 @@ from mautrix.types import (
     UserID,
     VideoInfo,
 )
-from mautrix.util import magic, variation_selector
+from mautrix.util import background_task, magic, variation_selector
 from mautrix.util.message_send_checkpoint import MessageSendCheckpointStatus
 from mautrix.util.simple_lock import SimpleLock
 from mautrix.util.simple_template import SimpleTemplate
@@ -730,7 +730,7 @@ class Portal(DBPortal, BasePortal):
                         self.log.exception(f"Failed to get entity through {user.tgid} for update")
                         return self.mxid
                 update = self.update_matrix_room(user, entity)
-                asyncio.create_task(update)
+                background_task.create(update)
                 await self.invite_to_matrix(invites or [])
             return self.mxid
         async with self._room_create_lock:
@@ -811,6 +811,12 @@ class Portal(DBPortal, BasePortal):
         participants_count = 2
         if isinstance(entity, Chat):
             participants_count = entity.participants_count
+            if entity.deactivated or entity.migrated_to:
+                self.log.error(
+                    "Throwing error for attempted portal creation "
+                    f"({entity.deactivated=}, {entity.migrated_to=})"
+                )
+                raise RuntimeError("Tried to create portal for deactivated chat")
         elif isinstance(entity, Channel) and not entity.broadcast:
             participants_count = entity.participants_count
         if participants_count is None and self.config["bridge.max_member_count"] > 0:
@@ -1531,11 +1537,11 @@ class Portal(DBPortal, BasePortal):
         )
         if self.peer_type == "channel":
             if not self.megagroup:
-                asyncio.create_task(
+                background_task.create(
                     self._try_handle_read_for_sponsored_msg(user, event_id, timestamp)
                 )
             else:
-                asyncio.create_task(self._poll_telegram_reactions(user))
+                background_task.create(self._poll_telegram_reactions(user))
 
     async def _preproc_kick_ban(
         self, user: u.User | p.Puppet, source: u.User
@@ -1970,7 +1976,7 @@ class Portal(DBPortal, BasePortal):
             message_type=msgtype,
         )
         await self._send_delivery_receipt(event_id)
-        asyncio.create_task(self._send_message_status(event_id, err=None))
+        background_task.create(self._send_message_status(event_id, err=None))
         if response.ttl_period:
             await self._mark_disappearing(
                 event_id=event_id,
@@ -1999,7 +2005,6 @@ class Portal(DBPortal, BasePortal):
             status.status = MessageStatus.RETRIABLE
         else:
             status.status = MessageStatus.SUCCESS
-        status.fill_legacy_booleans()
 
         await intent.send_message_event(
             room_id=self.mxid,
@@ -2277,7 +2282,7 @@ class Portal(DBPortal, BasePortal):
                 EventType.ROOM_REDACTION,
             )
             await self._send_delivery_receipt(redaction_event_id)
-            asyncio.create_task(self._send_message_status(redaction_event_id, err=None))
+            background_task.create(self._send_message_status(redaction_event_id, err=None))
 
     async def _handle_matrix_reaction_deletion(
         self, deleter: u.User, event_id: EventID, tg_space: TelegramID
@@ -2390,7 +2395,7 @@ class Portal(DBPortal, BasePortal):
                 EventType.REACTION,
             )
             await self._send_delivery_receipt(reaction_event_id)
-            asyncio.create_task(self._send_message_status(reaction_event_id, err=None))
+            background_task.create(self._send_message_status(reaction_event_id, err=None))
 
     async def _handle_matrix_reaction(
         self,
@@ -2593,7 +2598,7 @@ class Portal(DBPortal, BasePortal):
             # Ignore typing notifications from double puppeted users to avoid echoing
             return
         is_typing = isinstance(update.action, SendMessageTypingAction)
-        await user.default_mxid_intent.set_typing(self.mxid, is_typing=is_typing)
+        await user.default_mxid_intent.set_typing(self.mxid, timeout=5000 if is_typing else 0)
 
     async def handle_telegram_edit(
         self, source: au.AbstractUser, sender: p.Puppet | None, evt: Message
@@ -2606,7 +2611,7 @@ class Portal(DBPortal, BasePortal):
             return
 
         if self.peer_type != "channel" and isinstance(evt, Message) and evt.reactions is not None:
-            asyncio.create_task(
+            background_task.create(
                 self.try_handle_telegram_reactions(source, TelegramID(evt.id), evt.reactions)
             )
         sender_id = sender.tgid if sender else self.tgid
@@ -2667,7 +2672,7 @@ class Portal(DBPortal, BasePortal):
             source, intent, is_bot, evt, no_reply_fallback=True
         )
         converted.content.set_edit(editing_msg.mxid)
-        await intent.set_typing(self.mxid, is_typing=False)
+        await intent.set_typing(self.mxid, timeout=0)
         timestamp = evt.edit_date if evt.edit_date != evt.date else None
         event_id = await self._send_message(
             intent, converted.content, timestamp=timestamp, event_type=converted.type
@@ -2824,8 +2829,11 @@ class Portal(DBPortal, BasePortal):
             elif not insertion_id:
                 insertion_id = self.base_insertion_id
         await self.save()
-        # TODO this should probably check actual event count instead of message count
-        if event_count > 0 and self.backfill_msc2716:
+        if (
+            event_count > 0
+            and self.backfill_msc2716
+            and (not forward or not self.bridge.homeserver_software.is_hungry)
+        ):
             await self.main_intent.send_state_event(
                 self.mxid,
                 StateMarker,
@@ -3289,8 +3297,28 @@ class Portal(DBPortal, BasePortal):
             await self.bridge._notify_bridge_blocked()
             return
 
+        try:
+            await self._handle_telegram_message(source, sender, evt)
+        except Exception:
+            sender_id = sender.tgid if sender else None
+            self.log.exception(
+                f"Failed to handle Telegram message {evt.id} from {sender_id} via {source.tgid}"
+            )
+            if self.config["bridge.incoming_bridge_error_reports"]:
+                intent = sender.intent_for(self) if sender else self.main_intent
+                await self._send_message(
+                    intent,
+                    TextMessageEventContent(
+                        msgtype=MessageType.NOTICE,
+                        body="Error processing message from Telegram",
+                    ),
+                )
+
+    async def _handle_telegram_message(
+        self, source: au.AbstractUser, sender: p.Puppet | None, evt: Message
+    ) -> None:
         if not self.mxid:
-            self.log.trace("Got telegram message %d, but no room exists, creating...", evt.id)
+            self.log.debug("Got telegram message %d, but no room exists, creating...", evt.id)
             await self.create_matrix_room(source, invites=[source.mxid], update_if_exists=False)
             if not self.mxid:
                 self.log.warning("Room doesn't exist even after creating, dropping %d", evt.id)
@@ -3357,12 +3385,17 @@ class Portal(DBPortal, BasePortal):
                 f"Telegram user {sender.tgid} sent a message, but doesn't have a displayname,"
                 " updating info..."
             )
-            entity = await source.client.get_entity(sender.peer)
-            await sender.update_info(source, entity)
-            if not sender.displayname:
-                self.log.debug(
-                    f"Telegram user {sender.tgid} doesn't have a displayname even after"
-                    f" updating with data {entity!s}"
+            try:
+                entity = await source.client.get_entity(sender.peer)
+                await sender.update_info(source, entity)
+                if not sender.displayname:
+                    self.log.debug(
+                        f"Telegram user {sender.tgid} doesn't have a displayname even after"
+                        f" updating with data {entity!s}"
+                    )
+            except ValueError as e:
+                self.log.warning(
+                    f"Couldn't find entity to update profile of {sender.tgid}", exc_info=True
                 )
 
         if sender:
@@ -3374,7 +3407,7 @@ class Portal(DBPortal, BasePortal):
         converted = await self._msg_conv.convert(source, intent, is_bot, evt)
         if not converted:
             return
-        await intent.set_typing(self.mxid, is_typing=False)
+        await intent.set_typing(self.mxid, timeout=0)
         event_id = await self._send_message(
             intent, converted.content, timestamp=evt.date, event_type=converted.type
         )
@@ -3429,7 +3462,7 @@ class Portal(DBPortal, BasePortal):
             await intent.redact(self.mxid, event_id)
             return
         if isinstance(evt, Message) and evt.reactions:
-            asyncio.create_task(
+            background_task.create(
                 self.try_handle_telegram_reactions(
                     source, dbm.tgid, evt.reactions, dbm=dbm, timestamp=evt.date
                 )
@@ -3450,7 +3483,7 @@ class Portal(DBPortal, BasePortal):
         dm = DisappearingMessage(self.mxid, event_id, seconds, expiration_ts=expires_at * 1000)
         await dm.insert()
         if expires_at:
-            asyncio.create_task(self._disappear_event(dm))
+            background_task.create(self._disappear_event(dm))
 
     async def _create_room_on_action(
         self, source: au.AbstractUser, action: TypeMessageAction
@@ -3464,6 +3497,10 @@ class Portal(DBPortal, BasePortal):
             MessageActionChatJoinedByRequest,
         )
         if isinstance(action, create_and_exit) or isinstance(action, create_and_continue):
+            self.log.debug(
+                f"Got telegram action of type {type(action).__name__},"
+                " but no room exists, creating..."
+            )
             await self.create_matrix_room(
                 source, invites=[source.mxid], update_if_exists=isinstance(action, create_and_exit)
             )
