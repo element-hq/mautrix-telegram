@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 
 class Puppet(DBPuppet, BasePuppet):
+    bridge: TelegramBridge
     config: Config
     hs_domain: str
     mxid_template: SimpleTemplate[TelegramID]
@@ -78,6 +79,7 @@ class Puppet(DBPuppet, BasePuppet):
         avatar_url: ContentURI | None = None,
         name_set: bool = False,
         avatar_set: bool = False,
+        contact_info_set: bool = False,
         is_bot: bool = False,
         is_channel: bool = False,
         is_premium: bool = False,
@@ -100,6 +102,7 @@ class Puppet(DBPuppet, BasePuppet):
             avatar_url=avatar_url,
             name_set=name_set,
             avatar_set=avatar_set,
+            contact_info_set=contact_info_set,
             is_bot=is_bot,
             is_channel=is_channel,
             is_premium=is_premium,
@@ -154,6 +157,7 @@ class Puppet(DBPuppet, BasePuppet):
 
     @classmethod
     def init_cls(cls, bridge: "TelegramBridge") -> AsyncIterable[Awaitable[None]]:
+        cls.bridge = bridge
         cls.config = bridge.config
         cls.loop = bridge.loop
         cls.mx = bridge.matrix
@@ -279,6 +283,8 @@ class Puppet(DBPuppet, BasePuppet):
 
         if not self.disable_updates:
             try:
+                changed = await self._update_contact_info(force=changed) or changed
+
                 changed = (
                     await self.update_displayname(source, info, client_override=client_override)
                     or changed
@@ -296,8 +302,37 @@ class Puppet(DBPuppet, BasePuppet):
             await self.update_portals_meta()
             await self.save()
 
+    async def _update_contact_info(self, force: bool = False) -> bool:
+        if not self.bridge.homeserver_software.is_hungry:
+            return False
+
+        if self.contact_info_set and not force:
+            return False
+
+        try:
+            identifiers = []
+            if self.username:
+                identifiers.append(f"telegram:{self.username}")
+            if self.phone:
+                phone = "+" + self.phone.lstrip("+")
+                identifiers.append(f"tel:{phone}")
+            await self.default_mxid_intent.beeper_update_profile(
+                {
+                    "com.beeper.bridge.identifiers": identifiers,
+                    "com.beeper.bridge.remote_id": str(self.tgid),
+                    "com.beeper.bridge.service": "telegram",
+                    "com.beeper.bridge.network": "telegram",
+                    "com.beeper.bridge.is_network_bot": self.is_bot,
+                }
+            )
+            self.contact_info_set = True
+        except Exception:
+            self.log.exception("Error updating contact info")
+            self.contact_info_set = False
+        return True
+
     async def update_portals_meta(self) -> None:
-        if not p.Portal.private_chat_portal_meta and not self.mx.e2ee:
+        if p.Portal.private_chat_portal_meta != "always" and not self.mx.e2ee:
             return
         async for portal in p.Portal.find_private_chats_with(self.tgid):
             await portal.update_info_from_puppet(self)

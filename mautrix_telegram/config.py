@@ -164,7 +164,15 @@ class Config(BaseBridgeConfig):
         copy("bridge.animated_emoji.args.width")
         copy("bridge.animated_emoji.args.height")
         copy("bridge.animated_emoji.args.fps")
-        copy("bridge.private_chat_portal_meta")
+        if isinstance(self.get("bridge.private_chat_portal_meta", "default"), bool):
+            base["bridge.private_chat_portal_meta"] = (
+                "always" if self["bridge.private_chat_portal_meta"] else "default"
+            )
+        else:
+            copy("bridge.private_chat_portal_meta")
+            if base["bridge.private_chat_portal_meta"] not in ("default", "always", "never"):
+                base["bridge.private_chat_portal_meta"] = "default"
+        copy("bridge.disable_reply_fallbacks")
         copy("bridge.delivery_receipts")
         copy("bridge.delivery_error_reports")
         copy("bridge.incoming_bridge_error_reports")
@@ -182,8 +190,26 @@ class Config(BaseBridgeConfig):
         copy("bridge.backfill.double_puppet_backfill")
         copy("bridge.backfill.normal_groups")
         copy("bridge.backfill.unread_hours_threshold")
-        copy("bridge.backfill.forward.initial_limit")
-        copy("bridge.backfill.forward.sync_limit")
+        if "bridge.backfill.forward" in self:
+            initial_limit = self.get("bridge.backfill.forward.initial_limit", 10)
+            sync_limit = self.get("bridge.backfill.forward.sync_limit", 100)
+            base["bridge.backfill.forward_limits.initial.user"] = initial_limit
+            base["bridge.backfill.forward_limits.initial.normal_group"] = initial_limit
+            base["bridge.backfill.forward_limits.initial.supergroup"] = initial_limit
+            base["bridge.backfill.forward_limits.initial.channel"] = initial_limit
+            base["bridge.backfill.forward_limits.sync.user"] = sync_limit
+            base["bridge.backfill.forward_limits.sync.normal_group"] = sync_limit
+            base["bridge.backfill.forward_limits.sync.supergroup"] = sync_limit
+            base["bridge.backfill.forward_limits.sync.channel"] = sync_limit
+        else:
+            copy("bridge.backfill.forward_limits.initial.user")
+            copy("bridge.backfill.forward_limits.initial.normal_group")
+            copy("bridge.backfill.forward_limits.initial.supergroup")
+            copy("bridge.backfill.forward_limits.initial.channel")
+            copy("bridge.backfill.forward_limits.sync.user")
+            copy("bridge.backfill.forward_limits.sync.normal_group")
+            copy("bridge.backfill.forward_limits.sync.supergroup")
+            copy("bridge.backfill.forward_limits.sync.channel")
         copy("bridge.backfill.incremental.messages_per_batch")
         copy("bridge.backfill.incremental.post_batch_delay")
         copy("bridge.backfill.incremental.max_batches.user")
@@ -215,6 +241,7 @@ class Config(BaseBridgeConfig):
 
         copy("bridge.filter.mode")
         copy("bridge.filter.list")
+        copy("bridge.filter.users")
 
         copy("bridge.command_prefix")
 

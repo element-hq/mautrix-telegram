@@ -35,6 +35,7 @@ from telethon.errors import (
     PhoneNumberInvalidError,
     PhoneNumberUnoccupiedError,
     SessionPasswordNeededError,
+    SessionRevokedError,
 )
 
 from mautrix.bridge import InvalidAccessToken, OnlyLoginSelf
@@ -288,6 +289,17 @@ class AuthAPI(abc.ABC):
                 errcode="phone_number_unoccupied",
                 error="That phone number has not been registered.",
             )
+        except FloodWaitError as e:
+            return self.get_login_response(
+                mxid=user.mxid,
+                state="code",
+                status=429,
+                errcode="flood_wait",
+                error=(
+                    "You tried to enter your phone code too many times. "
+                    f"Please wait for {format_duration(e.seconds)} before trying again."
+                ),
+            )
         except SessionPasswordNeededError:
             if not password_in_data:
                 if user.command_status and user.command_status["action"] == "Login":
@@ -342,6 +354,28 @@ class AuthAPI(abc.ABC):
                 errcode="password_invalid",
                 error="Incorrect password.",
             )
+        except SessionRevokedError:
+            return self.get_login_response(
+                mxid=user.mxid,
+                state="request",
+                status=401,
+                errcode="session_revoked",
+                error=(
+                    "Please try again. Login cancelled because your other sessions were "
+                    "terminated via the Telegram app."
+                ),
+            )
+        except FloodWaitError as e:
+            return self.get_login_response(
+                mxid=user.mxid,
+                state="password",
+                status=429,
+                errcode="flood_wait",
+                error=(
+                    "You tried to enter your password too many times. "
+                    f"Please wait for {format_duration(e.seconds)} before trying again."
+                ),
+            )
         except Exception as e:
             self.log.exception("Error sending password")
             if isinstance(e, ValueError) and "You must provide a phone and a code" in str(e):
@@ -357,5 +391,5 @@ class AuthAPI(abc.ABC):
                 state="password",
                 status=500,
                 errcode="unknown_error",
-                error="Internal server error while sending password.",
+                error=f"Internal server error while sending password. {e}",
             )

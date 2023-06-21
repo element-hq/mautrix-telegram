@@ -326,6 +326,23 @@ bridge:
         # Enable key sharing? If enabled, key requests for rooms where users are in will be fulfilled.
         # You must use a client that supports requesting keys from other users to use this feature.
         allow_key_sharing: false
+        # Options for deleting megolm sessions from the bridge.
+        delete_keys:
+            # Beeper-specific: delete outbound sessions when hungryserv confirms
+            # that the user has uploaded the key to key backup.
+            delete_outbound_on_ack: false
+            # Don't store outbound sessions in the inbound table.
+            dont_store_outbound: false
+            # Ratchet megolm sessions forward after decrypting messages.
+            ratchet_on_decrypt: false
+            # Delete fully used keys (index >= max_messages) after decrypting messages.
+            delete_fully_used_on_decrypt: false
+            # Delete previous megolm sessions from same device when receiving a new one.
+            delete_prev_on_new_session: false
+            # Delete megolm sessions received from a device when the device is deleted.
+            delete_on_device_delete: false
+            # Periodically delete megolm sessions when 2x max_age has passed since receiving the session.
+            periodically_delete_expired: false
         # What level of device verification should be required from users?
         #
         # Valid levels:
@@ -361,9 +378,14 @@ bridge:
             # default.
             messages: 100
 
-    # Whether or not to explicitly set the avatar and room name for private
-    # chat portal rooms. This will be implicitly enabled if encryption.default is true.
-    private_chat_portal_meta: false
+    # Whether to explicitly set the avatar and room name for private chat portal rooms.
+    # If set to `default`, this will be enabled in encrypted rooms and disabled in unencrypted rooms.
+    # If set to `always`, all DM rooms will have explicit names and avatars set.
+    # If set to `never`, DM rooms will never have names and avatars set.
+    private_chat_portal_meta: default
+    # Disable generating reply fallbacks? Some extremely bad clients still rely on them,
+    # but they're being phased out and will be completely removed in the future.
+    disable_reply_fallbacks: false
     # Whether or not the bridge should send a read receipt from the bridge bot when a message has
     # been sent to Telegram.
     delivery_receipts: false
@@ -412,6 +434,9 @@ bridge:
         # Even without MSC2716, bridging old messages with correct timestamps requires the double
         # puppets to be in an appservice namespace, or the server to be modified to allow
         # overriding timestamps anyway.
+        #
+        # Also note that adding users to the appservice namespace may have unexpected side effects,
+        # as described in https://docs.mau.fi/bridges/general/double-puppeting.html#appservice-method
         double_puppet_backfill: false
         # Whether or not to enable backfilling in normal groups.
         # Normal groups have numerous technical problems in Telegram, and backfilling normal groups
@@ -426,11 +451,19 @@ bridge:
         #
         # Using a negative initial limit is not recommended, as it would try to backfill everything in a single batch.
         # MSC2716 and the incremental settings are meant for backfilling everything incrementally rather than at once.
-        forward:
+        forward_limits:
             # Number of messages to backfill immediately after creating a portal.
-            initial_limit: 10
+            initial:
+                user: 50
+                normal_group: 100
+                supergroup: 10
+                channel: 10
             # Number of messages to backfill when syncing chats.
-            sync_limit: 100
+            sync:
+                user: 100
+                normal_group: 100
+                supergroup: 100
+                channel: 100
 
         # Settings for incremental backfill of history. These only apply when using MSC2716.
         incremental:
@@ -510,7 +543,6 @@ bridge:
     # Filter rooms that can/can't be bridged. Can also be managed using the `filter` and
     # `filter-mode` management commands.
     #
-    # Filters do not affect direct chats.
     # An empty blacklist will essentially disable the filter.
     filter:
         # Filter mode to use. Either "blacklist" or "whitelist".
@@ -519,6 +551,11 @@ bridge:
         mode: blacklist
         # The list of group/channel IDs to filter.
         list: []
+        # How to handle direct chats:
+        # If users is "null", direct chats will follow the previous settings.
+        # If users is "true", direct chats will always be bridged.
+        # If users is "false", direct chats will never be bridged.
+        users: true
 
     # The prefix for commands. Only required in non-management rooms.
     command_prefix: "!tg"

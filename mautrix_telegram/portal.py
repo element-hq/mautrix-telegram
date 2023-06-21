@@ -1,5 +1,5 @@
 # mautrix-telegram - A Matrix-Telegram puppeting bridge
-# Copyright (C) 2022 Tulir Asokan
+# Copyright (C) 2023 Tulir Asokan
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -15,7 +15,17 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, List, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    List,
+    Literal,
+    Union,
+    cast,
+)
 from collections import defaultdict
 from datetime import datetime
 from html import escape as escape_html
@@ -23,19 +33,34 @@ from sqlite3 import IntegrityError
 from string import Template
 import asyncio
 import base64
+import itertools
 import random
 import time
 
 from asyncpg import UniqueViolationError
 from telethon.errors import (
+    ChatAdminRequiredError,
     ChatNotModifiedError,
+    ChatRestrictedError,
+    ChatWriteForbiddenError,
+    EntitiesTooLongError,
+    EntityBoundsInvalidError,
+    EntityMentionUserInvalidError,
+    InputUserDeactivatedError,
+    MessageEmptyError,
     MessageIdInvalidError,
+    MessageTooLongError,
     PhotoExtInvalidError,
     PhotoInvalidDimensionsError,
     PhotoSaveFileInvalidError,
     ReactionInvalidError,
     RPCError,
+    SlowModeWaitError,
+    UserBannedInChannelError,
+    UserIsBlockedError,
+    YouBlockedUserError,
 )
+from telethon.tl.custom import Dialog
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     EditPhotoRequest,
@@ -54,6 +79,7 @@ from telethon.tl.functions.messages import (
     ExportChatInviteRequest,
     GetMessageReactionsListRequest,
     GetMessagesReactionsRequest,
+    GetPeerDialogsRequest,
     MigrateChatRequest,
     SendReactionRequest,
     SetTypingRequest,
@@ -66,6 +92,7 @@ from telethon.tl.types import (
     ChannelFull,
     Chat,
     ChatBannedRights,
+    ChatEmpty,
     ChatFull,
     ChatPhoto,
     ChatPhotoEmpty,
@@ -76,6 +103,7 @@ from telethon.tl.types import (
     GeoPoint,
     InputChannel,
     InputChatUploadedPhoto,
+    InputDialogPeer,
     InputMediaUploadedDocument,
     InputMediaUploadedPhoto,
     InputPeerChannel,
@@ -95,6 +123,9 @@ from telethon.tl.types import (
     MessageActionChatMigrateTo,
     MessageActionContactSignUp,
     MessageActionGameScore,
+    MessageActionGiftPremium,
+    MessageActionGroupCall,
+    MessageActionPhoneCall,
     MessageMediaGame,
     MessageMediaGeo,
     MessagePeerReaction,
@@ -102,6 +133,10 @@ from telethon.tl.types import (
     PeerChannel,
     PeerChat,
     PeerUser,
+    PhoneCallDiscardReasonBusy,
+    PhoneCallDiscardReasonDisconnect,
+    PhoneCallDiscardReasonMissed,
+    PhoneCallRequested,
     Photo,
     PhotoEmpty,
     ReactionCount,
@@ -126,13 +161,16 @@ from telethon.tl.types import (
     UpdateChatUserTyping,
     UpdateMessageReactions,
     UpdateNewMessage,
+    UpdatePhoneCall,
     UpdateUserTyping,
     User,
+    UserEmpty,
     UserFull,
     UserProfilePhoto,
     UserProfilePhotoEmpty,
 )
-from telethon.utils import encode_waveform
+from telethon.tl.types.messages import PeerDialogs
+from telethon.utils import encode_waveform, get_peer_id
 import attr
 
 from mautrix.appservice import DOUBLE_PUPPET_SOURCE_KEY, IntentAPI
@@ -171,7 +209,8 @@ from mautrix.types import (
     UserID,
     VideoInfo,
 )
-from mautrix.util import background_task, magic, variation_selector
+from mautrix.util import background_task, magic, markdown, variation_selector
+from mautrix.util.format_duration import format_duration
 from mautrix.util.message_send_checkpoint import MessageSendCheckpointStatus
 from mautrix.util.simple_lock import SimpleLock
 from mautrix.util.simple_template import SimpleTemplate
@@ -243,12 +282,13 @@ class Portal(DBPortal, BasePortal):
     # Config cache
     filter_mode: str
     filter_list: list[int]
+    filter_users: bool | None
 
     max_initial_member_sync: int
     sync_channel_members: bool
     sync_matrix_state: bool
     public_portals: bool
-    private_chat_portal_meta: bool
+    private_chat_portal_meta: Literal["default", "always", "never"]
 
     alias_template: SimpleTemplate[str]
     hs_domain: str
@@ -417,13 +457,21 @@ class Portal(DBPortal, BasePortal):
     def allow_bridging(self) -> bool:
         if self._bridging_blocked_at_runtime:
             return False
-        elif self.peer_type == "user":
-            return True
+        elif self.peer_type == "user" and self.filter_users is not None:
+            return self.filter_users
         elif self.filter_mode == "whitelist":
             return self.tgid in self.filter_list
         elif self.filter_mode == "blacklist":
             return self.tgid not in self.filter_list
         return True
+
+    @property
+    def set_dm_room_metadata(self) -> bool:
+        return (
+            not self.is_direct
+            or self.private_chat_portal_meta == "always"
+            or (self.encrypted and self.private_chat_portal_meta != "never")
+        )
 
     @classmethod
     def init_cls(cls, bridge: "TelegramBridge") -> None:
@@ -441,6 +489,7 @@ class Portal(DBPortal, BasePortal):
         cls.private_chat_portal_meta = cls.config["bridge.private_chat_portal_meta"]
         cls.filter_mode = cls.config["bridge.filter.mode"]
         cls.filter_list = cls.config["bridge.filter.list"]
+        cls.filter_users = cls.config["bridge.filter.filter_users"]
         cls.hs_domain = cls.config["homeserver.domain"]
         cls.backfill_msc2716 = cls.config["bridge.backfill.msc2716"]
         cls.backfill_enable = cls.config["bridge.backfill.enable"]
@@ -466,8 +515,9 @@ class Portal(DBPortal, BasePortal):
 
     async def get_telegram_users_in_matrix_room(
         self, source: u.User, pre_create: bool = False
-    ) -> tuple[list[InputUser], list[UserID]]:
+    ) -> tuple[list[InputUser], list[UserID], list[u.User]]:
         user_tgids = {}
+        users = []
         intent = self.az.intent if pre_create else self.main_intent
         user_mxids = await intent.get_room_members(self.mxid, (Membership.JOIN, Membership.INVITE))
         for mxid in user_mxids:
@@ -475,6 +525,7 @@ class Portal(DBPortal, BasePortal):
                 continue
             mx_user = await u.User.get_by_mxid(mxid, create=False)
             if mx_user and mx_user.tgid:
+                users.append(mx_user)
                 user_tgids[mx_user.tgid] = mxid
             puppet_id = p.Puppet.get_id_from_mxid(mxid)
             if puppet_id:
@@ -490,7 +541,7 @@ class Portal(DBPortal, BasePortal):
                     f"creating a group: {e}"
                 )
                 errors.append(mxid)
-        return input_users, errors
+        return input_users, errors, users
 
     async def upgrade_telegram_chat(self, source: u.User) -> None:
         if self.peer_type != "chat":
@@ -541,11 +592,23 @@ class Portal(DBPortal, BasePortal):
         if await self._update_username(username):
             await self.save()
 
-    async def create_telegram_chat(
-        self, source: u.User, invites: list[InputUser], supergroup: bool = False
-    ) -> None:
+    async def create_telegram_chat(self, source: u.User, supergroup: bool = False) -> None:
         if not self.mxid:
             raise ValueError("Can't create Telegram chat for portal without Matrix room.")
+        invites, errors, users = await self.get_telegram_users_in_matrix_room(
+            source, pre_create=True
+        )
+        if len(errors) > 0:
+            error_list = "\n".join(f"* [{mxid}](https://matrix.to/#/{mxid})" for mxid in errors)
+            command_prefix = self.config["bridge.command_prefix"]
+            message = (
+                f"Failed to add the following users to the chat:\n\n{error_list}\n\n"
+                f"You can try `{command_prefix} search -r <username>` to help the bridge find "
+                "those users."
+            )
+            await self.az.intent.send_notice(
+                self.mxid, text=message, html=markdown.render(message)
+            )
         elif self.tgid:
             raise ValueError("Can't create Telegram chat for portal with existing Telegram chat.")
         elif await self.reached_portal_limit():
@@ -597,6 +660,8 @@ class Portal(DBPortal, BasePortal):
             await self.main_intent.set_power_levels(self.mxid, levels)
         await self.handle_matrix_power_levels(source, levels.users, {}, None)
         await self.update_bridge_info()
+        for user in users:
+            await user.register_portal(self)
         await self.main_intent.send_notice(self.mxid, f"Telegram chat created. ID: {self.tgid}")
 
     async def handle_matrix_invite(
@@ -701,12 +766,8 @@ class Portal(DBPortal, BasePortal):
         source: au.AbstractUser | None = None,
         photo: UserProfilePhoto | None = None,
     ) -> None:
-        if not self.encrypted and not self.private_chat_portal_meta:
-            return
         if puppet is None:
             puppet = await self.get_dm_puppet()
-        # The bridge bot needs to join for e2ee, but that messes up the default name
-        # generation. If/when canonical DMs happen, this might not be necessary anymore.
         changed = await self._update_avatar_from_puppet(puppet, source, photo)
         changed = await self._update_title(puppet.displayname) or changed
         if changed:
@@ -719,6 +780,7 @@ class Portal(DBPortal, BasePortal):
         entity: TypeChat | User = None,
         invites: InviteList = None,
         update_if_exists: bool = True,
+        from_dialog_sync: bool = False,
         client: MautrixTelegramClient | None = None,
     ) -> RoomID | None:
         if self.mxid:
@@ -735,7 +797,9 @@ class Portal(DBPortal, BasePortal):
             return self.mxid
         async with self._room_create_lock:
             try:
-                return await self._create_matrix_room(user, entity, invites, client=client)
+                return await self._create_matrix_room(
+                    user, entity, invites, client=client, from_dialog_sync=from_dialog_sync
+                )
             except Exception:
                 self.log.exception("Fatal error creating Matrix room")
 
@@ -790,6 +854,7 @@ class Portal(DBPortal, BasePortal):
         user: au.AbstractUser,
         entity: TypeChat | User,
         invites: InviteList,
+        from_dialog_sync: bool,
         client: MautrixTelegramClient | None = None,
     ) -> RoomID | None:
         if self.mxid:
@@ -803,6 +868,37 @@ class Portal(DBPortal, BasePortal):
 
         if await self.reached_portal_limit():
             raise ValueError("Can't create Telegram chat, reached portal limit.")
+
+        dialog = None
+        if not from_dialog_sync and not user.is_bot:
+            self.log.debug("Fetching dialog info for new portal")
+            try:
+                dialogs: PeerDialogs | None = await user.client(
+                    GetPeerDialogsRequest(
+                        peers=[InputDialogPeer(await self.get_input_entity(user))]
+                    )
+                )
+            except Exception:
+                self.log.warning("Failed to fetch dialog info", exc_info=True)
+                dialogs = None
+            if dialogs and dialogs.chats and dialogs.chats[0].id == self.tgid:
+                entity = dialogs.chats[0]
+                self.log.debug("Got entity info from get dialogs request")
+            elif dialogs and self.is_direct and dialogs.users:
+                for dialog_user in dialogs.users:
+                    if dialog_user.id == self.tgid:
+                        entity = dialog_user
+                        self.log.debug("Got user entity info from get dialogs request")
+                        break
+            if dialogs and dialogs.dialogs:
+                entities = {
+                    get_peer_id(x): x
+                    for x in itertools.chain(dialogs.users, dialogs.chats)
+                    if not isinstance(x, (UserEmpty, ChatEmpty))
+                }
+                msg = dialogs.messages[0] if len(dialogs.messages) == 1 else None
+                dialog = Dialog(user.client, dialogs.dialogs[0], entities, msg)
+                self.log.debug("Got dialog info for new portal: %s", dialog)
 
         if not entity:
             entity = await self.get_entity(user, client)
@@ -906,7 +1002,7 @@ class Portal(DBPortal, BasePortal):
             )
             if self.is_direct:
                 create_invites.add(self.az.bot_mxid)
-        if self.is_direct and (self.encrypted or self.private_chat_portal_meta):
+        if self.is_direct:
             assert puppet is not None
             self.title = puppet.displayname
             self.avatar_url = puppet.avatar_url
@@ -914,7 +1010,7 @@ class Portal(DBPortal, BasePortal):
         creation_content = {}
         if not self.config["bridge.federate_rooms"]:
             creation_content["m.federate"] = False
-        if self.avatar_url:
+        if self.avatar_url and self.set_dm_room_metadata:
             initial_state.append(
                 {
                     "type": str(EventType.ROOM_AVATAR),
@@ -926,14 +1022,14 @@ class Portal(DBPortal, BasePortal):
             self.log.debug(
                 f"Creating room with parameters invite={create_invites}, {autojoin_invites=}, "
                 f"{preset=}, {alias=!r}, name={self.title!r}, topic={self.about!r}, "
-                f"{creation_content=}, is_direct={self.is_direct}"
+                f"{creation_content=}, is_direct={self.is_direct}, {self.set_dm_room_metadata=}"
             )
             room_id = await self.main_intent.create_room(
                 alias_localpart=alias,
                 preset=preset,
                 is_direct=self.is_direct,
                 invitees=list(create_invites),
-                name=self.title,
+                name=self.title if self.set_dm_room_metadata else None,
                 topic=self.about,
                 initial_state=initial_state,
                 creation_content=creation_content,
@@ -941,8 +1037,8 @@ class Portal(DBPortal, BasePortal):
             )
             if not room_id:
                 raise Exception(f"Failed to create room")
-            self.name_set = bool(self.title)
-            self.avatar_set = bool(self.avatar_url)
+            self.name_set = bool(self.title) and self.set_dm_room_metadata
+            self.avatar_set = bool(self.avatar_url) and self.set_dm_room_metadata
 
             if not autojoin_invites and self.encrypted and self.matrix.e2ee and self.is_direct:
                 try:
@@ -956,6 +1052,10 @@ class Portal(DBPortal, BasePortal):
             self.log.debug(f"Matrix room created: {self.mxid}")
             await self.az.state_store.set_power_levels(self.mxid, power_levels)
             await user.register_portal(self)
+            if dialog and isinstance(user, u.User):
+                await user.post_sync_dialog(
+                    self, puppet=None, was_created=True, **user.dialog_to_sync_args(dialog)
+                )
 
             if not autojoin_invites or not self.is_direct:
                 await self.invite_to_matrix(invites)
@@ -1252,11 +1352,12 @@ class Portal(DBPortal, BasePortal):
     async def _update_title(
         self, title: str, sender: p.Puppet | None = None, save: bool = False
     ) -> bool:
-        if self.title == title and self.name_set:
+        if self.title == title and (self.name_set or not self.set_dm_room_metadata):
             return False
 
         self.title = title
-        if self.mxid:
+        self.name_set = False
+        if self.mxid and self.set_dm_room_metadata:
             try:
                 await self._try_set_state(
                     sender, EventType.ROOM_NAME, RoomNameStateEventContent(name=self.title)
@@ -1264,7 +1365,6 @@ class Portal(DBPortal, BasePortal):
                 self.name_set = True
             except Exception as e:
                 self.log.warning(f"Failed to set room name: {e}")
-                self.name_set = False
         if save:
             await self.save()
         return True
@@ -1272,12 +1372,13 @@ class Portal(DBPortal, BasePortal):
     async def _update_avatar_from_puppet(
         self, puppet: p.Puppet, user: au.AbstractUser | None, photo: UserProfilePhoto | None
     ) -> bool:
-        if self.photo_id == puppet.photo_id and self.avatar_set:
+        if self.photo_id == puppet.photo_id and (self.avatar_set or not self.set_dm_room_metadata):
             return False
         if puppet.avatar_url:
             self.photo_id = puppet.photo_id
             self.avatar_url = puppet.avatar_url
-            if self.mxid:
+            self.avatar_set = False
+            if self.mxid and self.set_dm_room_metadata:
                 try:
                     await self._try_set_state(
                         None,
@@ -1287,9 +1388,8 @@ class Portal(DBPortal, BasePortal):
                     self.avatar_set = True
                 except Exception as e:
                     self.log.warning(f"Failed to set room avatar: {e}")
-                    self.avatar_set = False
             return True
-        elif photo is not None and user is not None:
+        elif photo is not None and user is not None and self.set_dm_room_metadata:
             return await self._update_avatar(user, photo=photo)
         else:
             return False
@@ -1784,7 +1884,7 @@ class Portal(DBPortal, BasePortal):
         if content.msgtype == MessageType.VIDEO:
             attributes.append(
                 DocumentAttributeVideo(
-                    duration=content.info.duration // 1000 if content.info.duration else 0,
+                    duration=int(content.info.duration // 1000 if content.info.duration else 0),
                     w=w or 0,
                     h=h or 0,
                 )
@@ -1796,7 +1896,7 @@ class Portal(DBPortal, BasePortal):
                 waveform = [round(part / max(waveform_max / 32, 1)) for part in waveform]
             attributes.append(
                 DocumentAttributeAudio(
-                    duration=content.info.duration // 1000 if content.info.duration else 0,
+                    duration=int(content.info.duration // 1000 if content.info.duration else 0),
                     voice="org.matrix.msc3245.voice" in content,
                     waveform=encode_waveform(waveform) if waveform else None,
                 )
@@ -1984,6 +2084,34 @@ class Portal(DBPortal, BasePortal):
                 expires_at=int(response.date.timestamp()) + response.ttl_period,
             )
 
+    @staticmethod
+    def _error_to_human_message(err: Exception) -> str | None:
+        if isinstance(err, YouBlockedUserError):
+            return "You blocked this user"
+        elif isinstance(err, UserIsBlockedError):
+            return "You were blocked by this user"
+        elif isinstance(err, UserBannedInChannelError):
+            return "You're banned from sending messages in supergroups/channels"
+        elif isinstance(err, InputUserDeactivatedError):
+            return "This user was deleted"
+        elif isinstance(err, ChatAdminRequiredError):
+            return "Only admins can do that"
+        elif isinstance(err, (ChatRestrictedError, ChatWriteForbiddenError)):
+            return "You can't send messages in this chat"
+        elif isinstance(err, SlowModeWaitError):
+            return f"Slow mode enabled, wait {format_duration(err.seconds)} before sending"
+        elif isinstance(err, MessageEmptyError):
+            return "Message is empty"
+        elif isinstance(err, MessageTooLongError):
+            return "Message is too long"
+        elif isinstance(err, EntitiesTooLongError):
+            return "Message has too many formatting entities"
+        elif isinstance(err, EntityBoundsInvalidError):
+            return "Message formatting entities are malformed"
+        elif isinstance(err, EntityMentionUserInvalidError):
+            return "You mentioned an invalid user"
+        return None
+
     async def _send_message_status(self, event_id: EventID, err: Exception | None) -> None:
         if not self.config["bridge.message_status_events"]:
             return
@@ -2001,8 +2129,9 @@ class Portal(DBPortal, BasePortal):
             status.status = MessageStatus.FAIL
         elif err:
             status.reason = MessageStatusReason.GENERIC_ERROR
-            status.error = str(err)
+            status.error = f"{type(err)}: {err}"
             status.status = MessageStatus.RETRIABLE
+            status.message = self._error_to_human_message(err)
         else:
             status.status = MessageStatus.SUCCESS
 
@@ -2690,16 +2819,19 @@ class Portal(DBPortal, BasePortal):
         await DBMessage.replace_temp_mxid(temporary_identifier, self.mxid, event_id)
 
     @property
-    def _default_max_batches(self) -> int:
+    def _backfill_config_type(self) -> str:
         if self.peer_type == "user":
-            own_type = "user"
+            return "user"
         elif self.peer_type == "chat":
-            own_type = "normal_group"
+            return "normal_group"
         elif self.megagroup:
-            own_type = "supergroup"
+            return "supergroup"
         else:
-            own_type = "channel"
-        return self.config[f"bridge.backfill.incremental.max_batches.{own_type}"]
+            return "channel"
+
+    @property
+    def _default_max_batches(self) -> int:
+        return self.config[f"bridge.backfill.incremental.max_batches.{self._backfill_config_type}"]
 
     async def enqueue_backfill(
         self,
@@ -2743,7 +2875,10 @@ class Portal(DBPortal, BasePortal):
         if not client:
             client = source.client
         type = "initial" if initial else "sync"
-        limit = override_limit or self.config[f"bridge.backfill.forward.{type}_limit"]
+        limit = (
+            override_limit
+            or self.config[f"bridge.backfill.forward_limits.{type}.{self._backfill_config_type}"]
+        )
         if limit == 0:
             return "Limit is zero, not backfilling"
         with self.backfill_lock:
@@ -3191,17 +3326,18 @@ class Portal(DBPortal, BasePortal):
             )
 
     @staticmethod
-    def _reactions_filter(lst: list[TypeReaction], existing: DBReaction) -> bool:
+    def _reactions_filter(lst: list[MessagePeerReaction], existing: DBReaction) -> bool:
         if not lst:
             return False
-        for reaction in lst:
+        for wrapped_reaction in lst:
+            reaction = wrapped_reaction.reaction
             if isinstance(reaction, ReactionCustomEmoji) and existing.reaction == str(
                 reaction.document_id
             ):
-                lst.remove(reaction)
+                lst.remove(wrapped_reaction)
                 return True
             elif isinstance(reaction, ReactionEmoji) and existing.reaction == reaction.emoticon:
-                lst.remove(reaction)
+                lst.remove(wrapped_reaction)
                 return True
         return False
 
@@ -3221,15 +3357,14 @@ class Portal(DBPortal, BasePortal):
         total_count: int,
         timestamp: datetime | None = None,
     ) -> None:
-        reactions: dict[TelegramID, list[TypeReaction]] = {}
+        reactions: dict[TelegramID, list[MessagePeerReaction]] = {}
         custom_emoji_ids: list[int] = []
         for reaction in reaction_list:
             if isinstance(reaction.peer_id, (PeerUser, PeerChannel)) and isinstance(
                 reaction.reaction, (ReactionEmoji, ReactionCustomEmoji)
             ):
-                reactions.setdefault(p.Puppet.get_id_from_peer(reaction.peer_id), []).append(
-                    reaction.reaction
-                )
+                sender_user_id = p.Puppet.get_id_from_peer(reaction.peer_id)
+                reactions.setdefault(sender_user_id, []).append(reaction)
                 if isinstance(reaction.reaction, ReactionCustomEmoji):
                     custom_emoji_ids.append(reaction.reaction.document_id)
         is_full = len(reaction_list) == total_count
@@ -3254,7 +3389,8 @@ class Portal(DBPortal, BasePortal):
 
         new_reaction: TypeReaction
         for sender, new_reactions in reactions.items():
-            for new_reaction in new_reactions:
+            for new_wrapped_reaction in new_reactions:
+                new_reaction = new_wrapped_reaction.reaction
                 if isinstance(new_reaction, ReactionEmoji):
                     emoji_id = new_reaction.emoticon
                     matrix_reaction = variation_selector.add(new_reaction.emoticon)
@@ -3271,7 +3407,10 @@ class Portal(DBPortal, BasePortal):
                 self.log.debug(f"Bridging reaction {emoji_id} by {sender} to {msg.tgid}")
                 puppet: p.Puppet = await p.Puppet.get_by_tgid(sender)
                 mxid = await puppet.intent_for(self).react(
-                    msg.mx_room, msg.mxid, matrix_reaction, timestamp=timestamp
+                    msg.mx_room,
+                    msg.mxid,
+                    matrix_reaction,
+                    timestamp=new_wrapped_reaction.date or timestamp,
                 )
                 await DBReaction(
                     mxid=mxid,
@@ -3508,6 +3647,16 @@ class Portal(DBPortal, BasePortal):
             return False
         return True
 
+    async def handle_telegram_direct_call(
+        self, source: au.AbstractUser, sender: p.Puppet, update: UpdatePhoneCall
+    ) -> None:
+        if isinstance(update.phone_call, PhoneCallRequested):
+            call_type = "video call" if update.phone_call.video else "call"
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(msgtype=MessageType.EMOTE, body=f"started a {call_type}"),
+            )
+
     async def handle_telegram_action(
         self, source: au.AbstractUser, sender: p.Puppet | None, update: MessageService
     ) -> None:
@@ -3535,11 +3684,53 @@ class Portal(DBPortal, BasePortal):
             await self.delete_telegram_user(TelegramID(action.user_id), sender)
         elif isinstance(action, MessageActionChatMigrateTo):
             await self._migrate_and_save_telegram(TelegramID(action.channel_id))
-            # TODO encrypt
-            await sender.intent_for(self).send_emote(
-                self.mxid, "upgraded this group to a supergroup."
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(
+                    msgtype=MessageType.EMOTE,
+                    body="upgraded this group to a supergroup",
+                ),
             )
             await self.update_bridge_info()
+        elif isinstance(action, MessageActionPhoneCall):
+            call_type = "Video call" if action.video else "Call"
+            end_reason = "ended"
+            if isinstance(action.reason, PhoneCallDiscardReasonMissed):
+                end_reason = "cancelled" if sender.tgid == source.tgid else "missed"
+            elif isinstance(action.reason, PhoneCallDiscardReasonBusy):
+                end_reason = "rejected"
+            elif isinstance(action.reason, PhoneCallDiscardReasonDisconnect):
+                end_reason = "disconnected"
+            body = f"{call_type} {end_reason}"
+            if action.duration:
+                body += f" ({format_duration(action.duration)}"
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(msgtype=MessageType.NOTICE, body=body),
+            )
+        elif isinstance(action, MessageActionGroupCall):
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(
+                    msgtype=MessageType.EMOTE,
+                    body=(
+                        "started a video chat"
+                        if action.duration is None
+                        else f"ended the video chat ({format_duration(action.duration)})"
+                    ),
+                ),
+            )
+        elif isinstance(action, MessageActionGiftPremium):
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(
+                    msgtype=MessageType.EMOTE,
+                    body=(
+                        f"gifted Telegram Premium for {action.months} months "
+                        f"({action.amount / 100} {action.currency})"
+                    ),
+                ),
+            )
         elif isinstance(action, MessageActionGameScore):
             # TODO handle game score
             pass
@@ -3841,7 +4032,7 @@ class Portal(DBPortal, BasePortal):
             return portal
 
         if peer_type:
-            cls.log.info(f"Creating portal for {peer_type} {tgid} (receiver {tg_receiver})")
+            cls.log.info(f"Creating portal object for {peer_type} {tgid} (receiver {tg_receiver})")
             # TODO enable this for non-release builds
             #      (or add better wrong peer type error handling)
             # if peer_type == "chat":

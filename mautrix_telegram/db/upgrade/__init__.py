@@ -23,4 +23,5 @@ from . import (
     v15_message_find_recent,
     v16_backfill_anchor_id,
     v17_backfill_type,
+    v18_puppet_contact_info_set,
 )
