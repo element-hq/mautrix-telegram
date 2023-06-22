@@ -578,7 +578,7 @@ class TelegramMessageConverter:
     ) -> ConvertedMessage:
         override_text = (
             "This message is not supported on your version of Mautrix-Telegram. "
-            "Please check https://github.com/mautrix/telegram or ask your "
+            "Please check https://github.com/vector-im/mautrix-telegram or ask your "
             "bridge administrator about possible updates."
         )
         content = await formatter.telegram_to_matrix(
