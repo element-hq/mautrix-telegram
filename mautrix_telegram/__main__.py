@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 from time import time
 import asyncio
 
@@ -79,7 +79,7 @@ class TelegramBridge(Bridge):
     _telemetry_service: TelemetryService | None = None
 
     is_blocked: bool = False
-    _admin_rooms: Dict[RoomID, UserID] | None = None
+    _admin_rooms: dict[RoomID, UserID] | None = None
     _last_blocking_notification: int = 0
 
     periodic_sync_task: asyncio.Task | None = None
