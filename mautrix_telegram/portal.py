@@ -99,6 +99,7 @@ from telethon.tl.types import (
     DocumentAttributeAudio,
     DocumentAttributeFilename,
     DocumentAttributeImageSize,
+    DocumentAttributeSticker,
     DocumentAttributeVideo,
     GeoPoint,
     InputChannel,
@@ -110,6 +111,7 @@ from telethon.tl.types import (
     InputPeerChat,
     InputPeerPhotoFileLocation,
     InputPeerUser,
+    InputStickerSetEmpty,
     InputUser,
     MessageActionChannelCreate,
     MessageActionChatAddUser,
@@ -1847,6 +1849,7 @@ class Portal(DBPortal, BasePortal):
         max_image_size = self.config["bridge.image_as_file_size"] * 1000**2
         max_image_pixels = self.config["bridge.image_as_file_pixels"]
 
+        attributes = []
         if self.config["bridge.parallel_file_transfer"] and content.url:
             file_handle, file_size = await util.parallel_transfer_to_telegram(
                 client, self.main_intent, content.url, sender_id
@@ -1866,21 +1869,27 @@ class Portal(DBPortal, BasePortal):
                 file = await self.main_intent.download_media(content.url)
 
             if content.msgtype == MessageType.STICKER:
-                if mime != "image/gif":
-                    mime, file, w, h = util.convert_image(
-                        file, source_mime=mime, target_type="webp"
-                    )
-                else:
+                if mime == "image/gif":
                     # Remove sticker description
                     file_name = "sticker.gif"
+                else:
+                    if mime not in ("video/webm", "application/x-tgsticker"):
+                        mime, file, w, h = util.convert_image(
+                            file, source_mime=mime, target_type="webp"
+                        )
+                    attributes.append(
+                        DocumentAttributeSticker(
+                            alt=content.body, stickerset=InputStickerSetEmpty()
+                        )
+                    )
 
             file_handle = await client.upload_file(file)
             file_size = len(file)
 
         file_handle.name = file_name
         force_document = file_size >= max_image_size
+        attributes.append(DocumentAttributeFilename(file_name=file_name))
 
-        attributes = [DocumentAttributeFilename(file_name=file_name)]
         if content.msgtype == MessageType.VIDEO:
             attributes.append(
                 DocumentAttributeVideo(
@@ -2053,7 +2062,7 @@ class Portal(DBPortal, BasePortal):
         response: TypeMessage,
         msgtype: MessageType | None = None,
     ) -> None:
-        self.log.trace("Handled Matrix message: %s", response)
+        self.log.trace("Raw event handling response for %s: %s", event_id, response)
         event_hash, _ = self.dedup.check(response, (event_id, space), force_hash=edit_index != 0)
         if edit_index < 0:
             prev_edit = await DBMessage.get_one_by_tgid(TelegramID(response.id), space, -1)
@@ -2083,6 +2092,9 @@ class Portal(DBPortal, BasePortal):
                 seconds=response.ttl_period,
                 expires_at=int(response.date.timestamp()) + response.ttl_period,
             )
+        self.log.debug(
+            f"Handled Matrix message {event_id} -> {response.id} (edit index {edit_index})"
+        )
 
     @staticmethod
     def _error_to_human_message(err: Exception) -> str | None:
@@ -2439,6 +2451,10 @@ class Portal(DBPortal, BasePortal):
             await deleter.client(
                 SendReactionRequest(peer=self.peer, msg_id=msg.tgid, reaction=new_reactions)
             )
+            self.log.debug(
+                f"Handled Matrix deletion of reaction {event_id} to {msg.tgid} "
+                f"(new reaction count: {len(new_reactions) if new_reactions else 0})"
+            )
 
     async def _handle_matrix_deletion(self, deleter: u.User, event_id: EventID) -> None:
         real_deleter = deleter if not await deleter.needs_relaybot(self) else self.bot
@@ -2459,6 +2475,7 @@ class Portal(DBPortal, BasePortal):
         else:
             await message.mark_redacted()
             await real_deleter.client.delete_messages(self.peer, [message.tgid])
+            self.log.debug(f"Handled Matrix redaction of {event_id} / {message.tgid}")
 
     async def handle_matrix_reaction(
         self, user: u.User, target_event_id: EventID, emoji: str, reaction_event_id: EventID
@@ -2565,9 +2582,15 @@ class Portal(DBPortal, BasePortal):
             SendReactionRequest(peer=self.peer, msg_id=msg.tgid, reaction=new_tg_reactions)
         )
         puppet = await user.get_puppet()
+        removed = 0
         for db_reaction in reactions_to_remove:
+            removed += 1
             await db_reaction.delete()
             await puppet.intent_for(self).redact(db_reaction.mx_room, db_reaction.mxid)
+        self.log.debug(
+            f"Handled Matrix reaction {reaction_event_id} to {msg.tgid} "
+            f"(new reaction count: {len(new_tg_reactions)}, removed {removed} old reactions)"
+        )
         await DBReaction(
             mxid=reaction_event_id,
             mx_room=self.mxid,
@@ -2881,13 +2904,15 @@ class Portal(DBPortal, BasePortal):
         )
         if limit == 0:
             return "Limit is zero, not backfilling"
+        timeout = self.config["bridge.backfill.forward_timeout"]
         with self.backfill_lock:
-            output = await asyncio.wait_for(
-                self.backfill(
-                    source, client, forward=True, forward_limit=limit, last_tgid=last_tgid
-                ),
-                timeout=15 * 60,
+            task = self.backfill(
+                source, client, forward=True, forward_limit=limit, last_tgid=last_tgid
             )
+            if timeout > 0:
+                output = await asyncio.wait_for(task, timeout=timeout)
+            else:
+                output = await task
             self.log.debug(f"Forward backfill complete, status: {output}")
             return output
 
@@ -3244,9 +3269,13 @@ class Portal(DBPortal, BasePortal):
         for item in counts:
             if item.count == 2:
                 reactions += [
-                    MessagePeerReaction(reaction=item.reaction, peer_id=PeerUser(self.tgid)),
                     MessagePeerReaction(
-                        reaction=item.reaction, peer_id=PeerUser(self.tg_receiver)
+                        reaction=item.reaction, peer_id=PeerUser(self.tgid), date=None
+                    ),
+                    MessagePeerReaction(
+                        reaction=item.reaction,
+                        peer_id=PeerUser(self.tg_receiver),
+                        date=None,
                     ),
                 ]
             elif item.count == 1:
@@ -3254,6 +3283,7 @@ class Portal(DBPortal, BasePortal):
                     MessagePeerReaction(
                         reaction=item.reaction,
                         peer_id=PeerUser(self.tg_receiver if item.chosen_order else self.tgid),
+                        date=None,
                     )
                 )
         return reactions

@@ -199,8 +199,6 @@ class TelegramBridge(Bridge):
             self.as_connection_metric_task.cancel()
         if self.as_bridge_liveness_task:
             self.as_bridge_liveness_task.cancel()
-        for puppet in Puppet.by_custom_mxid.values():
-            puppet.stop()
         self.add_shutdown_actions(user.stop() for user in User.by_tgid.values())
         if self.bot:
             self.add_shutdown_actions(self.bot.stop())

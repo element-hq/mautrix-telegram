@@ -34,6 +34,8 @@ from telethon.tl.types import (
     DocumentAttributeVideo,
     Game,
     InputPhotoFileLocation,
+    InputStickerSetID,
+    InputStickerSetShortName,
     Message,
     MessageEntityPre,
     MessageMediaContact,
@@ -42,11 +44,14 @@ from telethon.tl.types import (
     MessageMediaGame,
     MessageMediaGeo,
     MessageMediaGeoLive,
+    MessageMediaInvoice,
     MessageMediaPhoto,
     MessageMediaPoll,
+    MessageMediaStory,
     MessageMediaUnsupported,
     MessageMediaVenue,
     MessageMediaWebPage,
+    MessageReplyStoryHeader,
     PeerChannel,
     PeerUser,
     Photo,
@@ -104,6 +109,7 @@ class DocAttrs(NamedTuple):
     mime_type: str | None
     is_sticker: bool
     sticker_alt: str | None
+    sticker_pack_ref: dict | None
     width: int
     height: int
     is_gif: bool
@@ -142,6 +148,8 @@ class TelegramMessageConverter:
             MessageMediaUnsupported: self._convert_unsupported,
             MessageMediaGame: self._convert_game,
             MessageMediaContact: self._convert_contact,
+            MessageMediaStory: self._convert_story,
+            MessageMediaInvoice: self._convert_invoice,
         }
         self._allowed_media = tuple(self._media_converters.keys())
 
@@ -251,6 +259,8 @@ class TelegramMessageConverter:
         deterministic_id: bool = False,
     ) -> None:
         if not evt.reply_to:
+            return
+        elif isinstance(evt.reply_to, MessageReplyStoryHeader):
             return
         space = (
             evt.peer_id.channel_id
@@ -700,10 +710,33 @@ class TelegramMessageConverter:
             )
         return ConvertedMessage(content=content)
 
+    @staticmethod
+    async def _convert_story(
+        source: au.AbstractUser, evt: Message, client: MautrixTelegramClient, **_
+    ) -> ConvertedMessage:
+        content = await formatter.telegram_to_matrix(
+            evt, source, client, override_text="Stories are not yet supported"
+        )
+        content.msgtype = MessageType.NOTICE
+        content["fi.mau.telegram.unsupported"] = True
+        return ConvertedMessage(content=content)
+
+    @staticmethod
+    async def _convert_invoice(
+        source: au.AbstractUser, evt: Message, client: MautrixTelegramClient, **_
+    ) -> ConvertedMessage:
+        content = await formatter.telegram_to_matrix(
+            evt, source, client, override_text="Invoices are not yet supported"
+        )
+        content.msgtype = MessageType.NOTICE
+        content["fi.mau.telegram.unsupported"] = True
+        return ConvertedMessage(content=content)
+
 
 def _parse_document_attributes(attributes: list[TypeDocumentAttribute]) -> DocAttrs:
     name, mime_type, is_sticker, sticker_alt, width, height = None, None, False, None, 0, 0
     is_gif, is_audio, is_voice, duration, waveform = False, False, False, 0, bytes()
+    sticker_pack_ref = None
     for attr in attributes:
         if isinstance(attr, DocumentAttributeFilename):
             name = name or attr.file_name
@@ -711,6 +744,13 @@ def _parse_document_attributes(attributes: list[TypeDocumentAttribute]) -> DocAt
         elif isinstance(attr, DocumentAttributeSticker):
             is_sticker = True
             sticker_alt = attr.alt
+            if isinstance(attr.stickerset, InputStickerSetID):
+                sticker_pack_ref = {
+                    "id": str(attr.stickerset.id),
+                    "access_hash": str(attr.stickerset.access_hash),
+                }
+            elif isinstance(attr.stickerset, InputStickerSetShortName):
+                sticker_pack_ref = {"short_name": attr.stickerset.short_name}
         elif isinstance(attr, DocumentAttributeAnimated):
             is_gif = True
         elif isinstance(attr, DocumentAttributeVideo):
@@ -728,6 +768,7 @@ def _parse_document_attributes(attributes: list[TypeDocumentAttribute]) -> DocAt
         mime_type,
         is_sticker,
         sticker_alt,
+        sticker_pack_ref,
         width,
         height,
         is_gif,
@@ -759,6 +800,13 @@ def _parse_document_meta(
     else:
         mime_type = file.mime_type or document.mime_type
     info = ImageInfo(size=file.size, mimetype=mime_type)
+
+    if attrs.is_sticker:
+        info["fi.mau.telegram.sticker"] = {
+            "alt": attrs.sticker_alt,
+            "id": str(document.id),
+            "pack": attrs.sticker_pack_ref,
+        }
 
     if attrs.mime_type and not file.was_converted:
         file.mime_type = attrs.mime_type or file.mime_type

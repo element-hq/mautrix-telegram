@@ -620,8 +620,11 @@ class User(DBUser, AbstractUser, BaseUser):
             await self.stop()
             await sess.delete()
 
+        # Drop LOGGED_OUT states if the user was already logged out previously
+        # and doesn't have a remote ID anymore
         # TODO send a management room notice for non-manual logouts?
-        await self.push_bridge_state(state, error=error, message=message)
+        if self.tgid or state != BridgeStateEvent.LOGGED_OUT:
+            await self.push_bridge_state(state, error=error, message=message)
         if delete:
             await self.delete()
             self.by_mxid.pop(self.mxid, None)
@@ -977,11 +980,18 @@ class User(DBUser, AbstractUser, BaseUser):
         self.log.debug("Contact syncing complete")
         return contacts
 
+    @property
+    def _available_reactions_up_to_date(self) -> bool:
+        return (
+            bool(self._available_emoji_reactions)
+            and self._available_emoji_reactions_fetched + 12 * 60 * 60 > time.monotonic()
+        )
+
     async def get_available_reactions(self) -> set[str]:
-        if self._available_emoji_reactions_fetched + 12 * 60 * 60 > time.monotonic():
+        if self._available_reactions_up_to_date:
             return self._available_emoji_reactions
         async with self._available_emoji_reactions_lock:
-            if self._available_emoji_reactions_fetched + 12 * 60 * 60 > time.monotonic():
+            if self._available_reactions_up_to_date:
                 return self._available_emoji_reactions
             self.log.debug("Fetching available emoji reactions")
             available_reactions = await self.client(
@@ -991,12 +1001,17 @@ class User(DBUser, AbstractUser, BaseUser):
                 self._available_emoji_reactions = {
                     react.reaction
                     for react in available_reactions.reactions
-                    if self.is_premium or not react.premium
+                    if not react.inactive and (self.is_premium or not react.premium)
                 }
                 self._available_emoji_reactions_hash = available_reactions.hash
                 self._available_emoji_reactions_fetched = time.monotonic()
                 self.log.debug(
                     "Got available emoji reactions: %s", self._available_emoji_reactions
+                )
+            elif self._available_emoji_reactions is None:
+                self.log.warning(
+                    f"Got {available_reactions} in response to available reactions request"
+                    " even though nothing is cached"
                 )
             return self._available_emoji_reactions
 
