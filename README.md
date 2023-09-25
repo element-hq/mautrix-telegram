@@ -24,6 +24,7 @@ E.g. The third modification release to 1.0 of the upstream bridge would be `v1.0
 [![Imports](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
 
 A Matrix-Telegram hybrid puppeting/relaybot bridge.
+
 ## Sponsors
 * [Joel Lehtonen / Zouppen](https://github.com/zouppen)
 
