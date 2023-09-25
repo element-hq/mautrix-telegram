@@ -208,6 +208,8 @@ class AbstractUser(ABC):
         sysversion = self.config["telegram.device_info.system_version"]
         appversion = self.config["telegram.device_info.app_version"]
         connection, proxy = self._proxy_settings
+        if proxy:
+            self.log.debug(f"Using proxy setting: {proxy}")
 
         assert isinstance(session, Session)
 
@@ -235,6 +237,7 @@ class AbstractUser(ABC):
             loop=self.loop,
             base_logger=base_logger,
             update_error_callback=self._telethon_update_error_callback,
+            use_ipv6=self.config["telegram.connection.use_ipv6"],
         )
         self.client.add_event_handler(self._update_catch)
 
@@ -711,6 +714,22 @@ class AbstractUser(ABC):
             self.log.debug("Ignoring relaybot-sent message %s to %s", update.id, portal.tgid_log)
             return
 
+        task = self._call_portal_message_handler(update, original_update, portal, sender)
+        if portal.backfill_lock.locked:
+            self.log.debug(
+                f"{portal.tgid_log} is backfill locked, moving incoming message to async task"
+            )
+            background_task.create(task)
+        else:
+            await task
+
+    async def _call_portal_message_handler(
+        self,
+        update: UpdateMessageContent,
+        original_update: UpdateMessage,
+        portal: po.Portal,
+        sender: pu.Puppet,
+    ) -> None:
         await portal.backfill_lock.wait(f"update {update.id}")
 
         if isinstance(update, MessageService):

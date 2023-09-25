@@ -40,7 +40,7 @@ appservice:
 
     # The full URI to the database. SQLite and Postgres are supported.
     # Format examples:
-    #   SQLite:   sqlite:///filename.db
+    #   SQLite:   sqlite:filename.db
     #   Postgres: postgres://username:password@hostname/dbname
     database: postgres://username:password@hostname/dbname
     # Additional arguments for asyncpg.create_pool() or sqlite3.connect()
@@ -343,6 +343,10 @@ bridge:
             delete_on_device_delete: false
             # Periodically delete megolm sessions when 2x max_age has passed since receiving the session.
             periodically_delete_expired: false
+            # Delete inbound megolm sessions that don't have the received_at field used for
+            # automatic ratcheting and expired session deletion. This is meant as a migration
+            # to delete old keys prior to the bridge update.
+            delete_outdated_inbound: false
         # What level of device verification should be required from users?
         #
         # Valid levels:
@@ -377,6 +381,10 @@ bridge:
             # session before changing it. The Matrix spec recommends 100 as the
             # default.
             messages: 100
+
+            # Disable rotating keys when a user's devices change?
+            # You should not enable this option unless you understand all the implications.
+            disable_device_change_key_rotation: false
 
     # Whether to explicitly set the avatar and room name for private chat portal rooms.
     # If set to `default`, this will be enabled in encrypted rooms and disabled in unencrypted rooms.
@@ -679,6 +687,8 @@ telegram:
         # is not recommended, since some requests can always trigger a call fail (such as searching
         # for messages).
         request_retries: 5
+        # Use IPv6 for Telethon connection
+        use_ipv6: false
         # How many concurrent connections should be handled on startup. Set to 0 to allow unlimited connections
         # Defualts to 0
         concurrent_connections_startup: 0

@@ -1,4 +1,4 @@
-FROM dock.mau.dev/tulir/lottieconverter:alpine-3.17
+FROM dock.mau.dev/tulir/lottieconverter:alpine-3.18
 
 RUN apk add --no-cache \
       python3 py3-pip py3-setuptools py3-wheel \
@@ -13,8 +13,6 @@ RUN apk add --no-cache \
       py3-idna \
       py3-rsa \
       #py3-telethon \ (outdated)
-        # Optional for socks proxies
-        py3-pysocks \
         py3-pyaes \
         # cryptg
           py3-cffi \
