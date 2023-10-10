@@ -59,7 +59,7 @@ class UserActivity:
 
     @classmethod
     async def get_by_puppet_id(cls, tgid: TelegramID) -> UserActivity | None:
-        q = f"SELECT {cls.columns} FROM user_activity WHERE tgid=$1"
+        q = f"SELECT {cls.columns} FROM user_activity WHERE puppet_id=$1"
         return cls._from_row(await cls.db.fetchrow(q, tgid))
 
     @classmethod
