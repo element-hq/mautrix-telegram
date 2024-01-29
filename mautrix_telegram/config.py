@@ -171,6 +171,7 @@ class Config(BaseBridgeConfig):
             if base["bridge.private_chat_portal_meta"] not in ("default", "always", "never"):
                 base["bridge.private_chat_portal_meta"] = "default"
         copy("bridge.disable_reply_fallbacks")
+        copy("bridge.cross_room_replies")
         copy("bridge.delivery_receipts")
         copy("bridge.delivery_error_reports")
         copy("bridge.incoming_bridge_error_reports")
@@ -184,8 +185,6 @@ class Config(BaseBridgeConfig):
         copy("bridge.kick_on_logout")
         copy("bridge.always_read_joined_telegram_notice")
         copy("bridge.backfill.enable")
-        copy("bridge.backfill.msc2716")
-        copy("bridge.backfill.double_puppet_backfill")
         copy("bridge.backfill.normal_groups")
         copy("bridge.backfill.unread_hours_threshold")
         if "bridge.backfill.forward" in self:

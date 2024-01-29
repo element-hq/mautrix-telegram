@@ -23,6 +23,7 @@ import time
 from telethon.errors import (
     AuthKeyDuplicatedError,
     AuthKeyError,
+    AuthKeyNotFound,
     RPCError,
     TakeoutInitDelayError,
     UnauthorizedError,
@@ -218,7 +219,7 @@ class User(DBUser, AbstractUser, BaseUser):
             finally:
                 METRIC_CONNECTING.dec()
 
-    async def on_signed_out(self, err: UnauthorizedError | AuthKeyError) -> None:
+    async def on_signed_out(self, err: UnauthorizedError | AuthKeyError | AuthKeyNotFound) -> None:
         error_code = "tg-auth-error"
         if isinstance(err, AuthKeyDuplicatedError):
             error_code = "tg-auth-key-duplicated"
@@ -239,8 +240,8 @@ class User(DBUser, AbstractUser, BaseUser):
     async def start(self, delete_unless_authenticated: bool = False) -> User:
         try:
             await super().start()
-        except AuthKeyDuplicatedError as e:
-            self.log.warning("Got AuthKeyDuplicatedError in start()")
+        except (AuthKeyDuplicatedError, AuthKeyNotFound) as e:
+            self.log.warning(f"Got {type(e).__name__} in start()")
             await self.on_signed_out(e)
             if not delete_unless_authenticated:
                 # The caller wants the client to be connected, so restart the connection.

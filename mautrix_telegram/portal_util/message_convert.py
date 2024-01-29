@@ -262,21 +262,46 @@ class TelegramMessageConverter:
             return
         elif isinstance(evt.reply_to, MessageReplyStoryHeader):
             return
+
+        if evt.reply_to.quote and content.msgtype.is_text:
+            content.ensure_has_html()
+            quote_html = await formatter.telegram_text_to_matrix_html(
+                source, evt.reply_to.quote_text, evt.reply_to.quote_entities
+            )
+            content.formatted_body = (
+                f"<blockquote data-telegram-partial-reply>{quote_html}</blockquote>"
+                f"{content.formatted_body}"
+            )
+
         space = (
             evt.peer_id.channel_id
             if isinstance(evt, Message) and isinstance(evt.peer_id, PeerChannel)
             else source.tgid
         )
+        if evt.reply_to.reply_to_peer_id and evt.reply_to.reply_to_peer_id != evt.peer_id:
+            if not self.config["bridge.cross_room_replies"]:
+                return
+            space = (
+                evt.reply_to.reply_to_peer_id.channel_id
+                if isinstance(evt.reply_to.reply_to_peer_id, PeerChannel)
+                else source.tgid
+            )
+
         reply_to_id = TelegramID(evt.reply_to.reply_to_msg_id)
         msg = await DBMessage.get_one_by_tgid(reply_to_id, space)
         no_fallback = no_fallback or self.config["bridge.disable_reply_fallbacks"]
-        if not msg or msg.mx_room != self.portal.mxid:
+        if not msg:
+            # TODO try to find room ID when generating deterministic ID for cross-room reply
             if deterministic_id:
                 content.set_reply(self.deterministic_event_id(space, reply_to_id))
+            return
+        elif msg.mx_room != self.portal.mxid and not self.config["bridge.cross_room_replies"]:
             return
         elif not isinstance(content, TextMessageEventContent) or no_fallback:
             # Not a text message, just set the reply metadata and return
             content.set_reply(msg.mxid)
+            if msg.mx_room != self.portal.mxid:
+                content.relates_to.in_reply_to["room_id"] = msg.mx_room
             return
 
         # Text message, try to fetch original message to generate reply fallback.
@@ -291,6 +316,8 @@ class TelegramMessageConverter:
         except Exception:
             self.log.exception("Failed to get event to add reply fallback")
             content.set_reply(msg.mxid)
+        if msg.mx_room != self.portal.mxid:
+            content.relates_to.in_reply_to["room_id"] = msg.mx_room
 
     @staticmethod
     def _photo_size_key(photo: TypePhotoSize) -> int:
@@ -439,8 +466,20 @@ class TelegramMessageConverter:
         return ConvertedMessage(
             content=content,
             caption=caption_content,
-            disappear_seconds=media.ttl_seconds,
+            disappear_seconds=self._adjust_ttl(media.ttl_seconds),
         )
+
+    @staticmethod
+    def _adjust_ttl(ttl: int | None) -> int | None:
+        if not ttl:
+            return None
+        elif ttl == 2147483647:
+            # View-once media, set low TTL
+            return 15
+        else:
+            # Increase media TTL because it's supposed to be counted from opening the media,
+            # but we can only count it from read receipt.
+            return ttl * 5
 
     async def _convert_document(
         self,
@@ -548,7 +587,7 @@ class TelegramMessageConverter:
             type=event_type,
             content=content,
             caption=caption_content,
-            disappear_seconds=evt.media.ttl_seconds,
+            disappear_seconds=self._adjust_ttl(evt.media.ttl_seconds),
         )
 
     @staticmethod
@@ -764,18 +803,18 @@ def _parse_document_attributes(attributes: list[TypeDocumentAttribute]) -> DocAt
             waveform = decode_waveform(attr.waveform) if attr.waveform else b""
 
     return DocAttrs(
-        name,
-        mime_type,
-        is_sticker,
-        sticker_alt,
-        sticker_pack_ref,
-        width,
-        height,
-        is_gif,
-        is_audio,
-        is_voice,
-        duration,
-        waveform,
+        name=name,
+        mime_type=mime_type,
+        is_sticker=is_sticker,
+        sticker_alt=sticker_alt,
+        sticker_pack_ref=sticker_pack_ref,
+        width=width,
+        height=height,
+        is_gif=is_gif,
+        is_audio=is_audio,
+        is_voice=is_voice,
+        duration=duration,
+        waveform=waveform,
     )
 
 
@@ -827,6 +866,10 @@ def _parse_document_meta(
             size=file.thumbnail.size,
         )
     elif attrs.is_sticker:
+        if not info.width or not info.height:
+            info.width = 256
+            info.height = 256
+
         # This is a hack for bad clients like Element iOS that require a thumbnail
         info.thumbnail_info = ImageInfo.deserialize(info.serialize())
         if file.decryption_info:
