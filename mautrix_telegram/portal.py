@@ -790,6 +790,8 @@ class Portal(DBPortal, BasePortal):
                 background_task.create(update)
                 await self.invite_to_matrix(invites or [])
             return self.mxid
+        elif user.is_relaybot and self.config["bridge.relaybot.ignore_unbridged_group_chat"]:
+            raise Exception("create_matrix_room called as relaybot")
         async with self._room_create_lock:
             try:
                 return await self._create_matrix_room(
@@ -1150,12 +1152,19 @@ class Portal(DBPortal, BasePortal):
         # We can't trust the member list if any of the following cases is true:
         #  * There are close to 10 000 users, because Telegram might not be sending all members.
         #  * The member sync count is limited, because then we might ignore some members.
-        #  * It's a channel, because non-admins don't have access to the member list.
+        #  * It's a channel, because non-admins don't have access to the member list
+        #    and even admins can only see 200 members.
+        #  * The source user is not in the chat, because that likely means it's a group
+        #    with the member list hidden (so only admins are visible).
         trust_member_list = (
-            len(allowed_tgids) < 9900
-            if self.max_initial_member_sync < 0
-            else len(allowed_tgids) < self.max_initial_member_sync - 10
-        ) and (self.megagroup or self.peer_type != "channel")
+            (
+                len(allowed_tgids) < 9900
+                if self.max_initial_member_sync < 0
+                else len(allowed_tgids) < self.max_initial_member_sync - 10
+            )
+            and (self.megagroup or self.peer_type != "channel")
+            and source.tgid in allowed_tgids
+        )
         if not trust_member_list:
             return None
 
@@ -3396,6 +3405,8 @@ class Portal(DBPortal, BasePortal):
         self, source: au.AbstractUser, sender: p.Puppet | None, evt: Message
     ) -> None:
         if not self.mxid:
+            if source.is_relaybot and self.config["bridge.relaybot.ignore_unbridged_group_chat"]:
+                return
             self.log.debug("Got telegram message %d, but no room exists, creating...", evt.id)
             await self.create_matrix_room(source, invites=[source.mxid], update_if_exists=False)
             if not self.mxid:
@@ -3568,7 +3579,7 @@ class Portal(DBPortal, BasePortal):
     async def _create_room_on_action(
         self, source: au.AbstractUser, action: TypeMessageAction
     ) -> bool:
-        if source.is_relaybot and self.config["bridge.ignore_unbridged_group_chat"]:
+        if source.is_relaybot and self.config["bridge.relaybot.ignore_unbridged_group_chat"]:
             return False
         create_and_exit = (MessageActionChatCreate, MessageActionChannelCreate)
         create_and_continue = (
