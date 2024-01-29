@@ -5,7 +5,7 @@ info:
   description: The provisioning API for Mautrix-Telegram, the Matrix-Telegram puppeting/relaybot bridge.
   license:
     name: AGPLv3
-    url: https://github.com/vector-im/mautrix-telegram/blob/element-master/LICENSE
+    url: https://github.com/element-hq/mautrix-telegram/blob/element-master/LICENSE
 
 externalDocs:
   description: Provisioning API docs on docs.mau.fi

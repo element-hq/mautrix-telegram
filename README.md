@@ -2,11 +2,11 @@
 
 The Element fork includes the following changes:
  - Add config limits for portal rooms https://github.com/mautrix/telegram/pull/469
- - Allow disabling user status updates from Telegram side https://github.com/vector-im/mautrix-telegram/pull/9
- - Don't block connections on startup https://github.com/vector-im/mautrix-telegram/pull/20
- - Add metrics for Appservice's Connection Pool stats https://github.com/vector-im/mautrix-telegram/pull/22, https://github.com/vector-im/mautrix-telegram/pull/27, https://github.com/vector-im/mautrix-telegram/pull/29
- - Don't require bot startup for bridge startup https://github.com/vector-im/mautrix-telegram/pull/24
- - Add `telegram.liveness_timeout` config to change `/_matrix/mau/live` when Telegram connections are no longer being received https://github.com/vector-im/mautrix-telegram/pull/23
+ - Allow disabling user status updates from Telegram side https://github.com/element-hq/mautrix-telegram/pull/9
+ - Don't block connections on startup https://github.com/element-hq/mautrix-telegram/pull/20
+ - Add metrics for Appservice's Connection Pool stats https://github.com/element-hq/mautrix-telegram/pull/22, https://github.com/element-hq/mautrix-telegram/pull/27, https://github.com/element-hq/mautrix-telegram/pull/29
+ - Don't require bot startup for bridge startup https://github.com/element-hq/mautrix-telegram/pull/24
+ - Add `telegram.liveness_timeout` config to change `/_matrix/mau/live` when Telegram connections are no longer being received https://github.com/element-hq/mautrix-telegram/pull/23
 
 Some changes that appear here may get upstreamed to https://github.com/mautrix/telegram, and will be removed from
 the list when they appear in both versions.

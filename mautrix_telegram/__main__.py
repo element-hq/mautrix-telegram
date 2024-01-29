@@ -63,7 +63,7 @@ class TelegramBridge(Bridge):
     beeper_network_name = "telegram"
     command = "python -m mautrix-telegram"
     description = "A Matrix-Telegram puppeting bridge."
-    repo_url = "https://github.com/vector-im/mautrix-telegram"
+    repo_url = "https://github.com/element-hq/mautrix-telegram"
     version = version
     markdown_version = linkified_version
     config_class = Config
