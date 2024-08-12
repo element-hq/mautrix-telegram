@@ -23,6 +23,7 @@ from typing import (
     Callable,
     List,
     Literal,
+    NamedTuple,
     Union,
     cast,
 )
@@ -49,6 +50,7 @@ from telethon.errors import (
     InputUserDeactivatedError,
     MessageEmptyError,
     MessageIdInvalidError,
+    MessageNotModifiedError,
     MessageTooLongError,
     PhotoExtInvalidError,
     PhotoInvalidDimensionsError,
@@ -113,6 +115,7 @@ from telethon.tl.types import (
     InputPeerUser,
     InputStickerSetEmpty,
     InputUser,
+    MessageActionBoostApply,
     MessageActionChannelCreate,
     MessageActionChatAddUser,
     MessageActionChatCreate,
@@ -159,6 +162,7 @@ from telethon.tl.types import (
     TypeUser,
     TypeUserFull,
     TypeUserProfilePhoto,
+    UpdateBotMessageReaction,
     UpdateChannelUserTyping,
     UpdateChatUserTyping,
     UpdateMessageReactions,
@@ -268,6 +272,11 @@ class BridgingError(Exception):
 
 class IgnoredMessageError(Exception):
     pass
+
+
+class WrappedReaction(NamedTuple):
+    reaction: ReactionEmoji | ReactionCustomEmoji
+    date: datetime | None
 
 
 class Portal(DBPortal, BasePortal):
@@ -435,6 +444,10 @@ class Portal(DBPortal, BasePortal):
     @property
     def is_direct(self) -> bool:
         return self.peer_type == "user"
+
+    @property
+    def is_channel(self) -> bool:
+        return self.peer_type == "channel"
 
     @property
     def has_bot(self) -> bool:
@@ -2139,7 +2152,7 @@ class Portal(DBPortal, BasePortal):
             status.status = MessageStatus.FAIL
         elif err:
             status.reason = MessageStatusReason.GENERIC_ERROR
-            status.error = f"{type(err)}: {err}"
+            status.error = f"{type(err).__name__}: {err}"
             status.status = MessageStatus.RETRIABLE
             status.message = self._error_to_human_message(err)
         else:
@@ -2170,9 +2183,10 @@ class Portal(DBPortal, BasePortal):
         )
 
         if msg and self.config["bridge.delivery_error_reports"]:
-            await self._send_message(
-                self.main_intent, TextMessageEventContent(msgtype=MessageType.NOTICE, body=msg)
-            )
+            if not isinstance(err, MessageNotModifiedError):
+                await self._send_message(
+                    self.main_intent, TextMessageEventContent(msgtype=MessageType.NOTICE, body=msg)
+                )
         await self._send_message_status(event_id, err)
 
     async def handle_matrix_message(
@@ -2203,7 +2217,6 @@ class Portal(DBPortal, BasePortal):
                 message_type=content.msgtype,
                 msg=f"\u26a0 Your message may not have been bridged: {e}",
             )
-            raise
         except Exception as e:
             if isinstance(e, IgnoredMessageError):
                 self.log.debug(f"Ignored {event_id}: {e}")
@@ -2342,20 +2355,17 @@ class Portal(DBPortal, BasePortal):
                 sender.command_status = None
             except (KeyError, TypeError):
                 if not logged_in or (
-                    "filename" in content and content["filename"] != content.body
+                    content.filename is not None and content.filename != content.body
                 ):
-                    if "filename" in content:
-                        file_name = content["filename"]
+                    if content.filename:
+                        file_name = content.filename
                     caption_content = TextMessageEventContent(
                         msgtype=MessageType.TEXT,
                         body=content.body,
                     )
-                    if (
-                        "formatted_body" in content
-                        and str(content.get("format")) == Format.HTML.value
-                    ):
-                        caption_content["formatted_body"] = content["formatted_body"]
-                        caption_content["format"] = Format.HTML
+                    if content.formatted_body and content.format == Format.HTML:
+                        caption_content.formatted_body = content.formatted_body
+                        caption_content.format = Format.HTML
                 else:
                     caption_content = None
             if caption_content:
@@ -2819,7 +2829,7 @@ class Portal(DBPortal, BasePortal):
         intent = sender.intent_for(self) if sender else self.main_intent
         is_bot = sender.is_bot if sender else False
         converted = await self._msg_conv.convert(
-            source, intent, is_bot, evt, no_reply_fallback=True
+            source, intent, is_bot, self.is_channel, evt, no_reply_fallback=True
         )
         converted.content.set_edit(editing_msg.mxid)
         await intent.set_typing(self.mxid, timeout=0)
@@ -3035,6 +3045,7 @@ class Portal(DBPortal, BasePortal):
             source,
             intent,
             is_bot,
+            self.is_channel,
             msg,
             client=client,
             deterministic_reply_id=self.bridge.homeserver_software.is_hungry,
@@ -3269,12 +3280,40 @@ class Portal(DBPortal, BasePortal):
                 recent_reactions = resp.reactions
 
         async with self.reaction_lock(dbm.mxid):
-            await self._handle_telegram_reactions_locked(
+            await self._handle_telegram_user_reactions_locked(
                 source, dbm, recent_reactions, total_count, timestamp=timestamp
             )
 
+    async def handle_telegram_bot_reactions(
+        self, source: au.AbstractUser, update: UpdateBotMessageReaction
+    ) -> None:
+        tg_space = self.tgid if self.peer_type == "channel" else source.tgid
+        dbm = await DBMessage.get_one_by_tgid(TelegramID(update.msg_id), tg_space)
+        if dbm is None:
+            return
+        reactions: dict[TelegramID, list[WrappedReaction]] = {}
+        custom_emoji_ids: list[int] = []
+        if isinstance(update.actor, PeerUser):
+            user_id = TelegramID(update.actor.user_id)
+        elif isinstance(update.actor, PeerChannel):
+            user_id = TelegramID(update.actor.channel_id)
+        else:
+            return
+        for reaction in update.new_reactions:
+            reactions.setdefault(user_id, []).append(WrappedReaction(reaction=reaction, date=None))
+        async with self.reaction_lock(dbm.mxid):
+            await self._handle_telegram_parsed_reactions_locked(
+                source,
+                dbm,
+                reactions,
+                custom_emoji_ids,
+                is_full=True,
+                only_user_id=user_id,
+                timestamp=update.date,
+            )
+
     @staticmethod
-    def _reactions_filter(lst: list[MessagePeerReaction], existing: DBReaction) -> bool:
+    def _reactions_filter(lst: list[WrappedReaction], existing: DBReaction) -> bool:
         if not lst:
             return False
         for wrapped_reaction in lst:
@@ -3297,7 +3336,7 @@ class Portal(DBPortal, BasePortal):
             return await source.get_max_reactions(is_premium)
         return 3 if is_premium else 1
 
-    async def _handle_telegram_reactions_locked(
+    async def _handle_telegram_user_reactions_locked(
         self,
         source: au.AbstractUser,
         msg: DBMessage,
@@ -3305,17 +3344,38 @@ class Portal(DBPortal, BasePortal):
         total_count: int,
         timestamp: datetime | None = None,
     ) -> None:
-        reactions: dict[TelegramID, list[MessagePeerReaction]] = {}
+        reactions: dict[TelegramID, list[WrappedReaction]] = {}
         custom_emoji_ids: list[int] = []
         for reaction in reaction_list:
             if isinstance(reaction.peer_id, (PeerUser, PeerChannel)) and isinstance(
                 reaction.reaction, (ReactionEmoji, ReactionCustomEmoji)
             ):
                 sender_user_id = p.Puppet.get_id_from_peer(reaction.peer_id)
-                reactions.setdefault(sender_user_id, []).append(reaction)
+                reactions.setdefault(sender_user_id, []).append(
+                    WrappedReaction(reaction.reaction, reaction.date)
+                )
                 if isinstance(reaction.reaction, ReactionCustomEmoji):
                     custom_emoji_ids.append(reaction.reaction.document_id)
         is_full = len(reaction_list) == total_count
+        await self._handle_telegram_parsed_reactions_locked(
+            source,
+            msg,
+            reactions,
+            custom_emoji_ids,
+            is_full=is_full,
+            timestamp=timestamp,
+        )
+
+    async def _handle_telegram_parsed_reactions_locked(
+        self,
+        source: au.AbstractUser,
+        msg: DBMessage,
+        reactions: dict[TelegramID, list[WrappedReaction]],
+        custom_emoji_ids: list[int],
+        is_full: bool,
+        only_user_id: TelegramID | None = None,
+        timestamp: datetime | None = None,
+    ) -> None:
         custom_emojis = await util.transfer_custom_emojis_to_matrix(source, custom_emoji_ids)
 
         existing_reactions = await DBReaction.get_all_by_message(msg.mxid, msg.mx_room)
@@ -3323,6 +3383,8 @@ class Portal(DBPortal, BasePortal):
         removed: list[DBReaction] = []
         for existing_reaction in existing_reactions:
             sender_id = existing_reaction.tg_sender
+            if only_user_id is not None and sender_id != only_user_id:
+                continue
             new_reactions = reactions.get(sender_id)
             if self._reactions_filter(new_reactions, existing_reaction):
                 if new_reactions is not None and len(new_reactions) == 0:
@@ -3493,7 +3555,7 @@ class Portal(DBPortal, BasePortal):
         else:
             intent = self.main_intent
         is_bot = sender.is_bot if sender else False
-        converted = await self._msg_conv.convert(source, intent, is_bot, evt)
+        converted = await self._msg_conv.convert(source, intent, is_bot, self.is_channel, evt)
         if not converted:
             return
         await intent.set_typing(self.mxid, timeout=0)
@@ -3655,7 +3717,7 @@ class Portal(DBPortal, BasePortal):
                 end_reason = "disconnected"
             body = f"{call_type} {end_reason}"
             if action.duration:
-                body += f" ({format_duration(action.duration)}"
+                body += f" ({format_duration(action.duration)})"
             await self._send_message(
                 sender.intent_for(self),
                 TextMessageEventContent(msgtype=MessageType.NOTICE, body=body),
@@ -3680,6 +3742,18 @@ class Portal(DBPortal, BasePortal):
                     body=(
                         f"gifted Telegram Premium for {action.months} months "
                         f"({action.amount / 100} {action.currency})"
+                    ),
+                ),
+            )
+        elif isinstance(action, MessageActionBoostApply):
+            await self._send_message(
+                sender.intent_for(self),
+                TextMessageEventContent(
+                    msgtype=MessageType.EMOTE,
+                    body=(
+                        "boosted the group"
+                        if action.boosts == 1
+                        else f"boosted the group {action.boosts} times"
                     ),
                 ),
             )

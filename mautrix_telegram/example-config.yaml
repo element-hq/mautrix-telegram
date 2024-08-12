@@ -271,6 +271,11 @@ bridge:
     image_as_file_size: 10
     # Maximum number of pixels in an image before sending to Telegram as a document. Defaults to 4096x4096 = 16777216.
     image_as_file_pixels: 16777216
+    # Maximum size of Telegram documents before linking to Telegrm instead of bridge
+    # to Matrix media.
+    document_as_link_size:
+        channel:
+        bot:
     # Enable experimental parallel file transfer, which makes uploads/downloads much faster by
     # streaming from/to Matrix and using many connections for Telegram.
     # Note that generating HQ thumbnails for videos is not possible with streamed transfers.
@@ -651,6 +656,8 @@ telegram:
     # Should incoming updates be handled sequentially to make sure order is preserved on Matrix?
     sequential_updates: true
     exit_on_update_error: false
+    # Interval to force refresh the connection (full reconnect). 0 disables it.
+    force_refresh_interval_seconds: 0
 
     # Telethon connection options.
     connection:

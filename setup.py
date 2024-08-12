@@ -5,6 +5,7 @@ from mautrix_telegram.get_version import git_tag, git_revision, version, linkifi
 with open("requirements.txt") as reqs:
     install_requires = reqs.read().splitlines()
 
+
 try:
     long_desc = open("README.md").read()
 except IOError:
@@ -37,7 +38,7 @@ setuptools.setup(
     packages=setuptools.find_packages(),
 
     install_requires=install_requires,
-    python_requires="~=3.9",
+    python_requires="~=3.10",
 
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -46,7 +47,6 @@ setuptools.setup(
         "Framework :: AsyncIO",
         "Programming Language :: Python",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",

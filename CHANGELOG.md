@@ -1,3 +1,12 @@
+# v0.15.2 (2024-07-16)
+
+* Dropped support for Python 3.9.
+* Updated Telegram API to layer 183.
+* Added support for authenticated media downloads.
+* Added support for receiving reactions when using a bot account.
+* Added option to limit file size by chat type.
+* Fixed reply bridging breaking in some cases.
+
 # v0.15.1 (2023-12-26)
 
 * Updated Telegram API to layer 169.
