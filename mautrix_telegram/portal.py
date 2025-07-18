@@ -70,7 +70,6 @@ from telethon.tl.functions.channels import (
     InviteToChannelRequest,
     JoinChannelRequest,
     UpdateUsernameRequest,
-    ViewSponsoredMessageRequest,
 )
 from telethon.tl.functions.messages import (
     AddChatUserRequest,
@@ -87,6 +86,7 @@ from telethon.tl.functions.messages import (
     SetTypingRequest,
     UnpinAllMessagesRequest,
     UpdatePinnedMessageRequest,
+    ViewSponsoredMessageRequest,
 )
 from telethon.tl.patched import Message, MessageService
 from telethon.tl.types import (
@@ -1044,6 +1044,7 @@ class Portal(DBPortal, BasePortal):
                 initial_state=initial_state,
                 creation_content=creation_content,
                 beeper_auto_join_invites=autojoin_invites,
+                room_version="11",
             )
             if not room_id:
                 raise Exception(f"Failed to create room")
@@ -1206,7 +1207,7 @@ class Portal(DBPortal, BasePortal):
                     continue
                 if mx_user.is_bot:
                     await mx_user.unregister_portal(*self.tgid_full)
-                if not self.has_bot:
+                if not self.has_bot and mx_user.tgid:
                     try:
                         await self.main_intent.kick_user(
                             self.mxid, mx_user.mxid, "You had left this Telegram chat."

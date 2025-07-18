@@ -265,8 +265,7 @@ bridge:
     # to resolve redirects in invite links.
     invite_link_resolve: false
     # Send captions in the same message as images. This will send data compatible with both MSC2530 and MSC3552.
-    # This is currently not supported in most clients.
-    caption_in_message: false
+    caption_in_message: true
     # Maximum size of image in megabytes before sending to Telegram as a document.
     image_as_file_size: 10
     # Maximum number of pixels in an image before sending to Telegram as a document. Defaults to 4096x4096 = 16777216.
@@ -324,8 +323,15 @@ bridge:
         # Default to encryption, force-enable encryption in all portals the bridge creates
         # This will cause the bridge bot to be in private chats for the encryption to work properly.
         default: false
-        # Whether to use MSC2409/MSC3202 instead of /sync long polling for receiving encryption-related data.
+        # Whether to use MSC3202/MSC4203 instead of /sync long polling for receiving encryption-related data.
+        # This option is not yet compatible with standard Matrix servers like Synapse and should not be used.
+        # Changing this option requires updating the appservice registration file.
         appservice: false
+        # Whether to use MSC4190 instead of appservice login to create the bridge bot device.
+        # Requires the homeserver to support MSC4190 and the device masquerading parts of MSC3202.
+        # Only relevant when using end-to-bridge encryption, required when using encryption with next-gen auth (MSC3861).
+        # Changing this option requires updating the appservice registration file.
+        msc4190: false
         # Require encryption, drop any unencrypted messages.
         require: false
         # Enable key sharing? If enabled, key requests for rooms where users are in will be fulfilled.
@@ -398,7 +404,7 @@ bridge:
     private_chat_portal_meta: default
     # Disable generating reply fallbacks? Some extremely bad clients still rely on them,
     # but they're being phased out and will be completely removed in the future.
-    disable_reply_fallbacks: false
+    disable_reply_fallbacks: true
     # Should cross-chat replies from Telegram be bridged? Most servers and clients don't support this.
     cross_room_replies: false
     # Whether or not the bridge should send a read receipt from the bridge bot when a message has

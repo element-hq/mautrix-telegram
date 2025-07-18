@@ -282,7 +282,7 @@ class TelegramMessageConverter:
         elif isinstance(evt.reply_to, MessageReplyStoryHeader):
             return
 
-        if evt.reply_to.quote and content.msgtype.is_text:
+        if evt.reply_to.quote and content.msgtype and content.msgtype.is_text:
             content.ensure_has_html()
             quote_html = await formatter.telegram_text_to_matrix_html(
                 source, evt.reply_to.quote_text, evt.reply_to.quote_entities
@@ -763,18 +763,18 @@ class TelegramMessageConverter:
             _n += 1
             return _n
 
-        text_answers = "\n".join(f"{n()}. {answer.text}" for answer in poll.answers)
-        html_answers = "\n".join(f"<li>{answer.text}</li>" for answer in poll.answers)
+        text_answers = "\n".join(f"{n()}. {answer.text.text}" for answer in poll.answers)
+        html_answers = "\n".join(f"<li>{answer.text.text}</li>" for answer in poll.answers)
         vote_command = f"{self.command_prefix} vote {poll_id}"
         content = TextMessageEventContent(
             msgtype=MessageType.TEXT,
             format=Format.HTML,
             body=(
-                f"Poll: {poll.question}\n{text_answers}\n"
+                f"Poll: {poll.question.text}\n{text_answers}\n"
                 f"Vote with {vote_command} <choice number>"
             ),
             formatted_body=(
-                f"<strong>Poll</strong>: {poll.question}<br/>\n"
+                f"<strong>Poll</strong>: {poll.question.text}<br/>\n"
                 f"<ol>{html_answers}</ol>\n"
                 f"Vote with <code>{vote_command} &lt;choice number&gt;</code>"
             ),
