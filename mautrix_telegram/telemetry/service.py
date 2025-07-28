@@ -87,17 +87,21 @@ class TelemetryService:
             instance_id,
             MatrixDestinationConfig(
                 bridge.config["telemetry.matrix_destination.room_id_or_alias"],
-                bridge.config["telemetry.matrix_destination.room_creation.options"]
-                if bridge.config["telemetry.matrix_destination.room_creation.enabled"]
-                else None,
+                (
+                    bridge.config["telemetry.matrix_destination.room_creation.options"]
+                    if bridge.config["telemetry.matrix_destination.room_creation.enabled"]
+                    else None
+                ),
             ),
-            HTTPDestinationConfig(
-                bridge.config["telemetry.http_destination.num_attempts"],
-                bridge.config["telemetry.http_destination.retry_delay"],
-                bridge.config["telemetry.http_destination.submission_url"],
-            )
-            if bridge.config["telemetry.http_destination.enabled"]
-            else None,
+            (
+                HTTPDestinationConfig(
+                    bridge.config["telemetry.http_destination.num_attempts"],
+                    bridge.config["telemetry.http_destination.retry_delay"],
+                    bridge.config["telemetry.http_destination.submission_url"],
+                )
+                if bridge.config["telemetry.http_destination.enabled"]
+                else None
+            ),
         )
         if self._config.matrix_destination.room_creation_options is not None:
             if self._config.matrix_destination.room_id_or_alias and (
