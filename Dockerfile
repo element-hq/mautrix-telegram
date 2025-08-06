@@ -38,6 +38,8 @@ RUN apk add --no-cache \
       jq \
       yq
 
+RUN apk add --no-cache git
+
 COPY requirements.txt /opt/mautrix-telegram/requirements.txt
 COPY optional-requirements.txt /opt/mautrix-telegram/optional-requirements.txt
 WORKDIR /opt/mautrix-telegram
